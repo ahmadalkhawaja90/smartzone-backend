@@ -11,28 +11,30 @@ interface BinanceCandle {
   volume: number;
 }
 
-// 1. جلب قائمة أزواج USDT السبوت النشطة من باينانس عبر النطاق العام المفتوح
+// 1. جلب قائمة أفضل أزواج USDT السبوت النشطة
 export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
   try {
-    const res = await axios.get('https://data-api.binance.vision/api/v3/exchangeInfo', {
+    const res = await axios.get('https://data-api.binance.vision/api/v3/ticker/24hr', {
       headers: { 'User-Agent': 'Mozilla/5.0' },
       timeout: 10000,
     });
-    const symbols = res.data.symbols
-      .filter((s: any) => s.status === 'TRADING' && s.isSpotTradingAllowed && s.quoteAsset === 'USDT')
-      .map((s: any) => s.symbol);
-
-    // استثناء العملات المستقرة والرموز ذات الرافعة
+    
     const blacklist = ['USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'BUSDUSDT', 'EURUSDT', 'GBPUSDT', 'DAIUSDT', 'AEURUSDT'];
-    return symbols.filter((s: string) => !blacklist.includes(s));
+    
+    // جلب أعلى 50 زوجاً من حيث حجم التداول والسيولة الحقيقية
+    return res.data
+      .filter((item: any) => item.symbol.endsWith('USDT') && !blacklist.includes(item.symbol))
+      .sort((a: any, b: any) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
+      .slice(0, 50)
+      .map((item: any) => item.symbol);
   } catch (error) {
     console.error('فشل جلب قائمة أزواج باينانس:', (error as Error).message);
-    return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'NEARUSDT', 'DOTUSDT'];
+    return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'NEARUSDT', 'DOTUSDT', 'DOGEUSDT', 'MATICUSDT'];
   }
 };
 
-// 2. جلب الشموع البيانية لأي عملة وفريم عبر النطاق المفتوح
-const fetchCandles = async (symbol: string, interval = '15m', limit = 50): Promise<BinanceCandle[]> => {
+// 2. جلب الشموع البيانية
+const fetchCandles = async (symbol: string, interval = '15m', limit = 40): Promise<BinanceCandle[]> => {
   try {
     const res = await axios.get('https://data-api.binance.vision/api/v3/klines', {
       params: { symbol, interval, limit },
@@ -52,132 +54,125 @@ const fetchCandles = async (symbol: string, interval = '15m', limit = 50): Promi
   }
 };
 
-// 3. خوارزمية تحليل وفحص استراتيجية ICT (Bullish Spot Setup)
+// 3. تحليل ICT Spot
 const analyzeICTBullishSetup = (candles: BinanceCandle[], symbol: string, timeframe: string) => {
   if (candles.length < 30) return null;
 
   const currentCandle = candles[candles.length - 1];
   const currentPrice = currentCandle.close;
 
-  // استخراج القمم والقيعان الأخيرة
   const recentCandles = candles.slice(-25, -1);
   const lowestLow = Math.min(...recentCandles.map((c) => c.low));
-  const highestHigh = Math.max(...recentCandles.map((c) => c.high));
 
   let confluenceScore = 0;
   const fulfilledConditions: Array<{ title: string; description: string }> = [];
 
-  // الشرط 1: سحب سيولة قاع سابق (SSL Sweep)
+  // الشرط 1: SSL Sweep
   const last5Lows = candles.slice(-6, -1).map((c) => c.low);
   const sweptRecentLow = Math.min(...last5Lows) <= lowestLow;
   if (sweptRecentLow) {
     confluenceScore += 25;
     fulfilledConditions.push({
       title: 'SSL Sweep',
-      description: 'اكتساح وسحب سيولة القيعان السابقة (Sell-Side Liquidity) لجمع أوامر البيع والبدء في موجة صعود مؤسسية.',
+      description: 'اكتساح وسحب سيولة القيعان السابقة (Sell-Side Liquidity) والبدء في موجة صعود.',
     });
   }
 
-  // الشرط 2: كسر وتغيير هيكل السوق صعوداً (Bullish MSS)
+  // الشرط 2: Bullish MSS
   const prevSwingHigh = Math.max(...candles.slice(-10, -2).map((c) => c.high));
   const hasMSS = currentPrice > prevSwingHigh || candles[candles.length - 2].close > prevSwingHigh;
   if (hasMSS) {
     confluenceScore += 25;
     fulfilledConditions.push({
       title: 'Bullish MSS',
-      description: 'تغيير طابع وهيكل السوق (Market Structure Shift) مع إغلاق شمعة زخم شرائي أعلى القمة السابقة.',
+      description: 'تغيير طابع وهيكل السوق (Market Structure Shift) باختراق قمة سابقة.',
     });
   }
 
-  // الشرط 3: وجود فجوة سعرية شرائية (Bullish FVG)
+  // الشرط 3: Bullish FVG
   const c1 = candles[candles.length - 3];
   const c3 = candles[candles.length - 1];
-  const hasBullishFVG = c3.low > c1.high;
-  if (hasBullishFVG) {
+  if (c3.low > c1.high) {
     confluenceScore += 25;
     fulfilledConditions.push({
       title: 'Bullish FVG',
-      description: 'تشكل فجوة قيمة عادلة شرائية (Fair Value Gap) تمثل منطقة إعادة تسعير مؤسسية للدخول المنخفض المخاطر.',
+      description: 'تشكل فجوة قيمة عادلة شرائية (Fair Value Gap) تمثل منطقة دخول آمنة.',
     });
   }
 
-  // الشرط 4: شمعة ارتداد وكتلة طلب شرائية (Bullish OB)
-  const isBullishEngulfing = currentCandle.close > currentCandle.open && currentCandle.close > candles[candles.length - 2].high;
-  if (isBullishEngulfing) {
+  // الشرط 4: رد فعل وزخم شرائي
+  if (currentCandle.close > currentCandle.open && currentCandle.close > candles[candles.length - 2].high) {
     confluenceScore += 15;
     fulfilledConditions.push({
       title: 'Bullish OB',
-      description: 'رد فعل شرائي وزخم ورفض قوي من كتلة الأوامر والطلب المؤسسية (Order Block).',
+      description: 'رد فعل شرائي وزخم ورفض قوي من كتلة الأوامر المؤسسية.',
     });
   }
 
-  // الشرط 5: مسافة آمنة للأهداف ومعدل عائد ممتاز
+  // الشرط 5: إدارة المخاطر ومعدل العائد
   const stopLoss = parseFloat((lowestLow * 0.992).toFixed(6));
   const risk = currentPrice - stopLoss;
-  if (risk > 0) {
+
+  if (risk > 0 && confluenceScore >= 60) {
     const tp1 = parseFloat((currentPrice + risk * 1.5).toFixed(6));
     const tp2 = parseFloat((currentPrice + risk * 2.5).toFixed(6));
     const tp3 = parseFloat((currentPrice + risk * 4.0).toFixed(6));
 
-    if (confluenceScore >= 65) {
-      confluenceScore += 10;
-      fulfilledConditions.push({
-        title: 'Optimal R:R',
-        description: 'معدل المخاطرة إلى العائد يتجاوز 1:2.5 مع استهداف سيولة القمم العليا (Buy-Side Liquidity).',
-      });
+    confluenceScore += 10;
+    fulfilledConditions.push({
+      title: 'Optimal R:R',
+      description: 'معدل المخاطرة إلى العائد يتجاوز 1:2.5 مع استهداف سيولة القمم العليا.',
+    });
 
-      const baseAsset = symbol.replace('USDT', '');
+    const baseAsset = symbol.replace('USDT', '');
 
-      return {
-        symbol,
-        baseAsset,
-        market: 'crypto' as const,
-        timeframe, // الفريم الحقيقي
-        type: 'SPOT_BUY' as const,
-        currentPrice,
-        entryZone: {
-          min: parseFloat((currentPrice * 0.996).toFixed(6)),
-          max: parseFloat((currentPrice * 1.004).toFixed(6)),
-        },
-        stopLoss,
-        targets: { tp1, tp2, tp3 },
-        riskRewardRatio: '1:2.8',
-        confluenceScore: Math.min(confluenceScore, 98),
-        fulfilledConditions,
-        analysisReasons: {
-          entryReason: `دخول شراء سبوت فوري على فريم [${timeframe}] بعد تأكيد كسر الهيكل Bullish MSS وتجمع السيولة.`,
-          stopLossReason: `تم وضع الوقف أسفل القاع المحمي $${stopLoss} لتأمين رأس المال ضد أي انزلاق غير متوقع.`,
-          takeProfitReason: `الأهداف محددة عند مستويات السيولة الخارجية (BSL) والقمم السعرية السابقة لتحقيق أقصى ربح.`,
-        },
-        status: 'ACTIVE' as const,
-      };
-    }
+    return {
+      symbol,
+      baseAsset,
+      market: 'crypto' as const,
+      timeframe,
+      type: 'SPOT_BUY' as const,
+      currentPrice,
+      entryZone: {
+        min: parseFloat((currentPrice * 0.996).toFixed(6)),
+        max: parseFloat((currentPrice * 1.004).toFixed(6)),
+      },
+      stopLoss,
+      targets: { tp1, tp2, tp3 },
+      riskRewardRatio: '1:2.8',
+      confluenceScore: Math.min(confluenceScore, 98),
+      fulfilledConditions,
+      analysisReasons: {
+        entryReason: `دخول شراء سبوت على فريم [${timeframe}] بعد تأكيد كسر الهيكل Bullish MSS.`,
+        stopLossReason: `تم وضع الوقف أسفل القاع $${stopLoss} لحماية رأس المال.`,
+        takeProfitReason: `الأهداف محددة عند مستويات السيولة (BSL) والقمم السابقة.`,
+      },
+      status: 'ACTIVE' as const,
+    };
   }
 
   return null;
 };
 
-// 4. تشغيل المسح الدوري الشامل على جميع العملات عبر 5 فريمات
+// 4. تشغيل المسح الدوري الشامل
 export const runFullCryptoScan = async () => {
   try {
-    const targetTimeframes = ['15m', '30m', '1h', '4h', '1d'];
-    console.log('🚀 بدء المسح الشامل متعدد الفريمات (15m, 30m, 1h, 4h, 1d)...');
-    
+    const targetTimeframes = ['15m', '1h', '4h'];
+    console.log('🚀 بدء المسح الشامل للكريبتو (15m, 1h, 4h)...');
+
     const symbols = await getActiveUSDTSpotPairs();
-    console.log(`🔍 تم جلب ${symbols.length} زوج للتداول السبوت.`);
+    console.log(`🔍 تم اختيار أفضل ${symbols.length} زوج بالسيولة للتداول.`);
 
     let discoveredCount = 0;
 
     for (let i = 0; i < symbols.length; i++) {
       const symbol = symbols[i];
 
-      // فحص العملة على كل فريم
       for (const tf of targetTimeframes) {
         const candles = await fetchCandles(symbol, tf, 40);
         const opportunity = analyzeICTBullishSetup(candles, symbol, tf);
 
         if (opportunity) {
-          // التحقق إن كانت هناك فرصة نشطة مسجلة مسبقاً لنفس العملة ونفس الفريم خلال آخر ساعتين
           const existing = await Opportunity.findOne({
             symbol,
             timeframe: tf,
@@ -188,24 +183,20 @@ export const runFullCryptoScan = async () => {
           if (!existing) {
             const createdOpp = await Opportunity.create(opportunity);
             discoveredCount++;
-            console.log(`✅ فرصة ICT جديدة: ${symbol} [${tf}] (نسبة التوافق: ${opportunity.confluenceScore}%)`);
+            console.log(`✅ فرصة ICT جديدة: ${symbol} [${tf}]`);
 
-            // ⚡ إرسال التوصية فوراً لقناة التلغرام
             sendOpportunityToTelegram(createdOpp).catch((err) => {
-              console.error(`خطأ أثناء إرسال إشعار التلغرام لـ ${symbol} (${tf}):`, err.message);
+              console.error(`خطأ إشعار التلغرام لـ ${symbol}:`, err.message);
             });
           }
         }
-      }
-
-      // تأخير 300ms بين كل 10 عملات لتجنب ضغط الـ API
-      if (i % 10 === 0 && i !== 0) {
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        // تأخير 50ms بين كل طلب لضمان استقرار السيرفر
+        await new Promise((resolve) => setTimeout(resolve, 50));
       }
     }
 
-    console.log(`✨ اكتمل الفحص: تم إضافة ${discoveredCount} فرصة شراء جديدة عبر مختلف الفريمات.`);
+    console.log(`✨ اكتمل الفحص: تم العثور على ${discoveredCount} فرصة شراء جديدة.`);
   } catch (error) {
-    console.error('خطأ أثناء تشغيل الماسح الذكي:', (error as Error).message);
+    console.error('خطأ أثناء تشغيل الماسح:', (error as Error).message);
   }
 };
