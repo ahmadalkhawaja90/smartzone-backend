@@ -24,7 +24,7 @@ export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
     return res.data.result.list
       .filter((item: any) => item.symbol.endsWith('USDT') && !blacklist.includes(item.symbol))
       .sort((a: any, b: any) => parseFloat(b.turnover24h) - parseFloat(a.turnover24h))
-      .slice(0, 40)
+      .slice(0, 100)
       .map((item: any) => item.symbol);
   } catch (error) {
     console.error('فشل جلب أزواج الكريبتو:', (error as Error).message);
