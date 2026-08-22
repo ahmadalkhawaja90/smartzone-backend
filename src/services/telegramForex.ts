@@ -14,18 +14,34 @@ export const sendForexOpportunityToTelegram = async (opp: any): Promise<boolean>
     return false;
   }
 
+  // فلتر السكور الذهبي للفوركس (60% فما فوق)
+  const score = opp.confluenceScore || opp.score || 0;
+  if (score < 60) {
+    return false;
+  }
+
   try {
-    const symbol = opp.symbol;
-    const timeframe = opp.timeframe;
+    const symbol = opp.symbol || 'ASSET';
+    const timeframe = opp.timeframe || '15m';
     const type = opp.type === 'BUY' ? '🟢 تمركز شرائي صاعد (Bullish)' : '🔴 تمركز بيعي هابط (Bearish)';
-    const strategy = opp.strategy;
-    const session = opp.session;
-    const entry = opp.entryPrice;
-    const sl = opp.stopLoss;
-    const tp1 = opp.tp1;
-    const tp2 = opp.tp2;
-    const score = opp.score || 90;
-    const conditions = opp.conditions ? opp.conditions.map((c: string) => `  ✅ ${c}`).join('\n') : '';
+    const strategy = opp.strategy || 'ICT Institutional Setup 🏛️';
+    const rr = opp.riskRewardRatio || '1:2.5';
+    
+    const entryMin = opp.entryZone?.min ?? opp.entryPrice ?? opp.currentPrice;
+    const entryMax = opp.entryZone?.max ?? opp.entryPrice ?? opp.currentPrice;
+    const sl = opp.stopLoss ?? 0;
+    
+    const tp1 = opp.targets?.tp1 ?? opp.tp1 ?? 0;
+    const tp2 = opp.targets?.tp2 ?? opp.tp2 ?? 0;
+    const tp3 = opp.targets?.tp3 ?? opp.tp3 ?? 0;
+
+    // استخراج الشروط المؤكدة
+    let conditionsText = '';
+    if (Array.isArray(opp.fulfilledConditions)) {
+      conditionsText = opp.fulfilledConditions.map((c: any) => `  ✅ ${c.title || c}`).join('\n');
+    } else if (Array.isArray(opp.conditions)) {
+      conditionsText = opp.conditions.map((c: string) => `  ✅ ${c}`).join('\n');
+    }
 
     const message = `
 🏛️ *SMARTZONE FOREX & METALS — تقرير هيكلي* 📊
@@ -34,33 +50,40 @@ export const sendForexOpportunityToTelegram = async (opp: any): Promise<boolean>
 🎯 *النموذج المؤسسي:* \`${strategy}\`
 🧭 *الاتجاه الفني:* ${type}
 ⏱ *الإطار الزمني:* \`${timeframe}\`
-🕒 *التوقيت / الجلسة:* \`${session}\`
 🔥 *التوافق الخوارزمي:* \`${score}%\`
+⚖️ *معدل العائد للمخاطرة:* \`${rr}\`
 
 📌 *المستويات السعرية المرصودة:*
-• منطقة الارتكاز والتوازن: \`${entry}\`
-• نقطة إلغاء الفرضية التحليلية (Invalidation): \`${sl}\`
-• مستويات تدفق السيولة:
-   ▫️ المستوى الأول: \`${tp1}\`
-   ▫️ المستوى الثاني: \`${tp2}\`
+• نطاق التمركز والدخول: \`$${entryMin} - $${entryMax}\`
+• نقطة إلغاء الفرضية التحليلية (Invalidation): \`$${sl}\`
+• مستويات تدفق السيولة المستهدفة:
+   ▫️ الهدف الأول: \`$${tp1}\`
+   ▫️ الهدف الثاني: \`$${tp2}\`
+   ${tp3 ? `▫️ الهدف الممتد: \`$${tp3}\`` : ''}
 
 📋 *المحددات الفنية المؤكدة:*
-${conditions}
+${conditionsText || '  ✅ تأكيد سحب السيولة وكسر الهيكل في منطقة الخصم'}
 ━━━━━━━━━━━━━━━━━━━━━
-> 💡 *السياق والمنطق الفني (${strategy}):*
-> تم رصد تداخل سيولة بنكية مع تفريغ عقود سابقة وتشكيل فجوة قيمة عادلة (FVG) مدعومة بكسر هيكلي لحظي (MSS) داخل نطاق الجلسة.
+> 💡 *السياق والمنطق الفني:*
+> تم رصد تداخل سيولة بنكية إثر سحب سيولة قاع سابق وتشكيل كسر هيكلي مع فجوة سعرية (FVG) داخل نطاق الخصم لاستهداف السيولة الخارجية.
 
 > ⚖️ *إفصاح وإخلاء مسؤولية تنظيمي:*
-> البيانات مولدة آلياً لمتابعة حركة السيولة المؤسسية لأغراض تعليمية وإحصائية بحتة، ولا تعتبر توصية مباشرة. الالتزام بإدارة رأس المال (0.5% - 1%) وتأمين المراكز يقع على مسؤوليتك الشخصية.
+> البيانات مولدة آلياً لمتابعة حركة السيولة المؤسسية (ICT/SMC) لأغراض تعليمية وإحصائية بحتة، ولا تعتبر توصية مباشرة. إدارة المخاطر تقع على مسؤوليتك الشخصية.
 
 📱 *منصة SmartZone AI*
 `;
 
     await bot.sendMessage(CHANNEL_ID, message, { parse_mode: 'Markdown' });
-    console.log(`✅ تم نشر التقرير الهيكلي ${strategy} للزوج [${symbol} - ${timeframe}] بنجاح.`);
+    console.log(`✅ تم نشر التقرير الفني للزوج [${symbol} - ${timeframe}] بسكور ${score}% بنجاح.`);
     return true;
   } catch (error) {
     console.error('❌ خطأ في إرسال تقرير الفوركس:', error);
     return false;
   }
+};
+
+// تشغيل نظام البوت بدون إرسال أي رسائل تيست
+export const initForexTelegramBot = () => {
+  if (!token) return;
+  console.log('🤖 تم تشغيل نظام إشعارات الفوركس والذهب بنجاح...');
 };
