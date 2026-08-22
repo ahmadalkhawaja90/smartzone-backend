@@ -51,24 +51,24 @@ export const generateOneTimeInviteLink = async (): Promise<string | null> => {
   }
 };
 
-// 2. إرسال تقرير الرصد الهيكلي فورياً إلى قناة التلغرام (فلتر 90% فما فوق فقط)
+// 2. إرسال تقرير الرصد الهيكلي فورياً إلى قناة التلغرام (فلتر 60% فما فوق)
 export const sendOpportunityToTelegram = async (opp: any): Promise<boolean> => {
   if (!bot || !CHANNEL_ID) {
     console.error('⚠️ مفقود TELEGRAM_BOT_TOKEN أو TELEGRAM_CHANNEL_ID في .env');
     return false;
   }
 
-  // 🎯 الفلتر الصارم: قبول التحليلات ذات نسبة التوافق 90% فما فوق فقط
+  // 🎯 الفلتر المعتمد: قبول الصفقات ذات نسبة التوافق 60% فما فوق (الفئة الأعلى نجاحاً)
   const score = opp.confluenceScore || 0;
   
-  if (score < 90) {
-    console.log(`⏳ تم حجب التقرير ${opp.symbol || 'ASSET'} عن التلجرام (السكور ${score}%). المطلوب 90% فما فوق.`);
+  if (score < 60) {
+    console.log(`⏳ تم حجب التقرير ${opp.symbol || 'ASSET'} عن التلجرام (السكور ${score}%). المطلوب 60% فما فوق.`);
     return false;
   }
 
   try {
     const symbol = opp.symbol || 'ASSET';
-    const timeframe = opp.timeframe || '15m';
+    const timeframe = opp.timeframe || '1h';
     const rr = opp.riskRewardRatio || '1:2.8';
     const entryMin = opp.entryZone?.min ?? opp.currentPrice;
     const entryMax = opp.entryZone?.max ?? opp.currentPrice;
