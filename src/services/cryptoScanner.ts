@@ -26,7 +26,7 @@ export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
     return res.data.result.list
       .filter((item: any) => item.symbol.endsWith('USDT') && !blacklist.includes(item.symbol))
       .sort((a: any, b: any) => parseFloat(b.turnover24h) - parseFloat(a.turnover24h))
-      .slice(0, 100)
+      .slice(0, 75)
       .map((item: any) => item.symbol);
   } catch (error) {
     console.error('⚠️ فشل جلب أزواج الكريبتو من Bybit:', (error as Error).message);
@@ -379,8 +379,8 @@ export const analyzeICTBullishSetup = (candles: CandleData[], symbol: string, ti
 // 5. تشغيل المسح الدوري الشامل — بعزل الأخطاء لكل عملة
 // ==========================================================
 export const runFullCryptoScan = async () => {
-  const targetTimeframes = ['15m', '1h', '4h'];
-  console.log('🚀 بدء المسح الشامل للكريبتو (15m, 1h, 4h)...');
+  const targetTimeframes = ['1h', '4h'];
+  console.log('🚀 بدء المسح الشامل للكريبتو (1h, 4h)...');
 
   let symbols: string[] = [];
   try {
@@ -415,7 +415,7 @@ export const runFullCryptoScan = async () => {
             symbol,
             timeframe: tf,
             status: 'ACTIVE',
-            createdAt: { $gte: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+            createdAt: { $gte: new Date(Date.now() - 6 * 60 * 60 * 1000) },
           });
 
           if (!existing) {
