@@ -324,7 +324,7 @@ export const analyzeICTBullishSetup = (candles: CandleData[], symbol: string, ti
   const stopLoss = parseFloat((priorSwingLow * 0.992).toFixed(6));
   const risk = currentPrice - stopLoss;
 
-  if (risk <= 0 || confluenceScore < 55) return null;
+  if (risk <= 0 || confluenceScore < 60) return null;
 
   // الأهداف = أقرب 3 قمم حقيقية غير مكسورة فوق السعر الحالي (سيولة فعلية بالسوق)
   const liquidityTargets = swingHighs
