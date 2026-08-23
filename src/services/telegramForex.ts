@@ -23,9 +23,7 @@ export const sendForexOpportunityToTelegram = async (opp: any, chartBuffer?: Buf
   try {
     const symbol = opp.symbol || 'ASSET';
     const timeframe = opp.timeframe || '15m';
-    const type = opp.type === 'BUY' ? '🟢 تمركز شرائي صاعد (Bullish)' : '🔴 تمركز بيعي هابط (Bearish)';
-    const strategy = opp.strategy || 'ICT Institutional Setup 🏛️';
-    const rr = opp.riskRewardRatio || '1:2.5';
+    const typeLabel = opp.type === 'BUY' ? '🟢 شراء صاعد (BUY)' : '🔴 بيع هابط (SELL)';
     
     const entryMin = opp.entryZone?.min ?? opp.entryPrice ?? opp.currentPrice;
     const entryMax = opp.entryZone?.max ?? opp.entryPrice ?? opp.currentPrice;
@@ -35,42 +33,24 @@ export const sendForexOpportunityToTelegram = async (opp: any, chartBuffer?: Buf
     const tp2 = opp.targets?.tp2 ?? opp.tp2 ?? 0;
     const tp3 = opp.targets?.tp3 ?? opp.tp3 ?? 0;
 
-    // استخراج الشروط المؤكدة
-    let conditionsText = '';
-    if (Array.isArray(opp.fulfilledConditions)) {
-      conditionsText = opp.fulfilledConditions.map((c: any) => `   ✅ ${c.title || c}`).join('\n');
-    } else if (Array.isArray(opp.conditions)) {
-      conditionsText = opp.conditions.map((c: string) => `   ✅ ${c}`).join('\n');
-    }
-
     const message = `
-🏛️ *SMARTZONE FOREX & METALS — تقرير هيكلي* 📊
-━━━━━━━━━━━━━━━━━━━━━
-📊 *الأصل المرصود:* \`${symbol}\`
-🎯 *النموذج المؤسسي:* \`${strategy}\`
-🧭 *الاتجاه الفني:* ${type}
-⏱ *الإطار الزمني:* \`${timeframe}\`
-🔥 *التوافق الخوارزمي:* \`${score}%\`
-⚖️ *معدل العائد للمخاطرة:* \`${rr}\`
+🏛️ *SMARTZONE AI* ⚡
+═════════════════════════
+💎 *الأصل:* \`${symbol}\`
+⏱️ *الفريم:* \`${timeframe}\`
+🚦 *نوع الصفقة:* *${typeLabel}*
+🏆 *قوة التوافق:* \`${score}%\` 🔥
+═════════════════════════
+🎯 *منطقة الدخول:* \`${entryMin} - ${entryMax}\`
+🛑 *وقف الخسارة:* \`${sl}\` ❌
 
-📌 *المستويات السعرية المرصودة:*
-• نطاق التمركز والدخول: \`$${entryMin} - $${entryMax}\`
-• نقطة إلغاء الفرضية التحليلية (Invalidation): \`$${sl}\`
-• مستويات تدفق السيولة المستهدفة:
-    ▫️ الهدف الأول: \`$${tp1}\`
-    ▫️ الهدف الثاني: \`$${tp2}\`
-    ${tp3 ? `▫️ الهدف الممتد: \`$${tp3}\`` : ''}
-
-📋 *المحددات الفنية المؤكدة:*
-${conditionsText || '   ✅ تأكيد سحب السيولة وكسر الهيكل في منطقة الخصم'}
-━━━━━━━━━━━━━━━━━━━━━
-> 💡 *السياق والمنطق الفني:*
-> تم رصد تداخل سيولة بنكية إثر سحب سيولة قاع سابق وتشكيل كسر هيكلي مع فجوة سعرية (FVG) داخل نطاق الخصم لاستهداف السيولة الخارجية.
-
-> ⚖️ *إفصاح وإخلاء مسؤولية تنظيمي:*
-> البيانات مولدة آلياً لمتابعة حركة السيولة المؤسسية (ICT/SMC) لأغراض تعليمية وإحصائية بحتة، ولا تعتبر توصية مباشرة. إدارة المخاطر تقع على مسؤوليتك الشخصية.
-
-📱 *منصة SmartZone AI*
+🏁 *المستويات المستهدفة:*
+  🔹 *الهدف 1:* \`${tp1}\` 🎯 _(1:1.5)_
+  🔹 *الهدف 2:* \`${tp2}\` 🚀 _(سيولة BSL)_
+  ${tp3 ? `🔹 *الهدف 3:* \`${tp3}\` 👑 _(امتداد 1:3.0)_` : ''}
+═════════════════════════
+💡 *القراءة الفنية:*
+✨ تم كسر قاع سابق وسحب السيولة المؤسسية (*SSL Sweep*)، أعقبه اندفاع سعري كسر هيكل السوق (*MSS*). الدخول مرتكز على فجوة سعرية صاعدة (*FVG*) داخل منطقة الخصم (*Discount Zone*).
 `;
 
     if (chartBuffer) {
