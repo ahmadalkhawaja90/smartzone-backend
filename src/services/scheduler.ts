@@ -1,7 +1,7 @@
 import cron from 'node-cron';
-import { runFullCryptoScan } from './cryptoScanner.js';
-import { runForexScan } from './forexScanner.js';
-import { runHarmonicScan } from './harmonicScanner.js'; // استدعاء فاحص نماذج الهارمونيك
+import { runFullCryptoScan } from './cryptoScanner';
+import { runForexScan } from './forexScanner';
+import { scanAllHarmonics } from './harmonicScanner'; // الاسم المطابق للمصدر داخل ملفك
 
 // أعلام لمنع تداخل عمليات الفحص (Concurrency Locks)
 let isForexScanning = false;
@@ -18,7 +18,7 @@ const executeForexScan = async () => {
   try {
     console.log('🌍 بدء فحص أسواق الفوركس والذهب (ICT & Silver Bullet)...');
     await runForexScan();
-  } catch (error) {
+  } catch (error: any) {
     console.error('❌ خطأ أثناء تنفيذ فحص الفوركس:', error.message || error);
   } finally {
     isForexScanning = false;
@@ -35,7 +35,7 @@ const executeCryptoScan = async () => {
   try {
     console.log('🔄 بدء فحص سوق العملات الرقمية (Crypto ICT Scanner)...');
     await runFullCryptoScan();
-  } catch (error) {
+  } catch (error: any) {
     console.error('❌ خطأ أثناء تنفيذ فحص العملات الرقمية:', error.message || error);
   } finally {
     isCryptoScanning = false;
@@ -50,9 +50,8 @@ const executeHarmonicScan = async () => {
   }
   isHarmonicScanning = true;
   try {
-    console.log('📐 بدء فحص نماذج الهارمونيك (Harmonic Patterns Scanner)...');
-    await runHarmonicScan();
-  } catch (error) {
+    await scanAllHarmonics();
+  } catch (error: any) {
     console.error('❌ خطأ أثناء تنفيذ فحص الهارمونيك:', error.message || error);
   } finally {
     isHarmonicScanning = false;
