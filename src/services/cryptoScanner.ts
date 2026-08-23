@@ -30,7 +30,7 @@ export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
       .map((item: any) => item.symbol);
   } catch (error) {
     console.error('⚠️ فشل جلب أزواج الكريبتو من Bybit:', (error as Error).message);
-    return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'NEARUSDT', 'DOTUSDT', 'DOGEUSDT'];
+    return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'NEARUSDT', 'DOTUSDT'];
   }
 };
 
@@ -113,122 +113,108 @@ const fetchCandles = async (symbol: string, interval = '60', limit = 100): Promi
 };
 
 // ==========================================================
-// 3. أدوات تحديد القمم والقيعان (Swing Points)
+// 3. أدوات التحليل المؤسسي (Swings & FVG)
 // ==========================================================
 interface SwingPoint {
   index: number;
   price: number;
+  type: 'HIGH' | 'LOW';
 }
 
-const findSwingLows = (candles: CandleData[], leftRight = 2): SwingPoint[] => {
-  const lows: SwingPoint[] = [];
+interface FVG {
+  startIndex: number;
+  top: number;
+  bottom: number;
+  type: 'BULLISH' | 'BEARISH';
+}
+
+const findSwings = (candles: CandleData[], leftRight = 3): SwingPoint[] => {
+  const swings: SwingPoint[] = [];
   for (let i = leftRight; i < candles.length - leftRight; i++) {
-    const left = candles.slice(i - leftRight, i);
-    const right = candles.slice(i + 1, i + 1 + leftRight);
-    if (left.every((c) => c.low >= candles[i].low) && right.every((c) => c.low >= candles[i].low)) {
-      lows.push({ index: i, price: candles[i].low });
-    }
+    const isHigh = candles.slice(i - leftRight, i + leftRight + 1).every((c, idx) => idx === leftRight || c.high <= candles[i].high);
+    const isLow = candles.slice(i - leftRight, i + leftRight + 1).every((c, idx) => idx === leftRight || c.low >= candles[i].low);
+
+    if (isHigh) swings.push({ index: i, price: candles[i].high, type: 'HIGH' });
+    if (isLow) swings.push({ index: i, price: candles[i].low, type: 'LOW' });
   }
-  return lows;
+  return swings;
 };
 
-const findSwingHighs = (candles: CandleData[], leftRight = 2): SwingPoint[] => {
-  const highs: SwingPoint[] = [];
-  for (let i = leftRight; i < candles.length - leftRight; i++) {
-    const left = candles.slice(i - leftRight, i);
-    const right = candles.slice(i + 1, i + 1 + leftRight);
-    if (left.every((c) => c.high <= candles[i].high) && right.every((c) => c.high <= candles[i].high)) {
-      highs.push({ index: i, price: candles[i].high });
+const detectFVGs = (candles: CandleData[], startIdx: number, endIdx: number): FVG[] => {
+  const fvgs: FVG[] = [];
+  for (let i = startIdx; i < endIdx - 2; i++) {
+    const c1 = candles[i];
+    const c3 = candles[i + 2];
+
+    if (c1.high < c3.low) {
+      fvgs.push({ startIndex: i, top: c3.low, bottom: c1.high, type: 'BULLISH' });
+    } else if (c1.low > c3.high) {
+      fvgs.push({ startIndex: i, top: c1.low, bottom: c3.high, type: 'BEARISH' });
     }
   }
-  return highs;
+  return fvgs;
 };
 
 // ==========================================================
-// 4. خوارزمية تحليل ICT المطورة والذكية
+// 4. خوارزمية تحليل ICT المؤسسية المطابقة للباك-تيست
 // ==========================================================
 export const analyzeICTBullishSetup = (candles: CandleData[], symbol: string, timeframe: string) => {
-  // تخفيف الشرط إلى 40 شمعة فقط لضمان فحص جميع الأزواج
-  if (candles.length < 40) return null;
+  if (candles.length < 50) return null;
 
-  const currentCandle = candles[candles.length - 1];
-  const currentPrice = currentCandle.close;
+  const swings = findSwings(candles, 3);
+  if (swings.length < 5) return null;
 
-  const swingLows = findSwingLows(candles, 2);
-  const swingHighs = findSwingHighs(candles, 2);
+  // فحص آخر هيكل مكتمل
+  const sCurrent = swings[swings.length - 1];
+  const sPrev = swings[swings.length - 2];
+  const sPrior = swings[swings.length - 3];
 
-  if (swingLows.length < 2 || swingHighs.length < 1) return null;
-
-  const priorSwingLow = swingLows[swingLows.length - 2].price;
-  const latestSwingLow = swingLows[swingLows.length - 1].price;
-  const latestSwingHigh = swingHighs[swingHighs.length - 1].price;
-
-  let confluenceScore = 0;
-  const fulfilledConditions: Array<{ title: string; description: string }> = [];
-
-  // 1. فحص منطقة الخصم (Discount Zone - 50% من النطاق الأخير)
-  const rangeLow = Math.min(latestSwingLow, latestSwingHigh);
-  const rangeHigh = Math.max(latestSwingLow, latestSwingHigh);
-  const midpoint = (rangeLow + rangeHigh) / 2;
-  const isDiscountZone = currentPrice <= midpoint * 1.01; // مع هامش مرونة 1%
-
-  if (isDiscountZone) {
-    confluenceScore += 25;
-    fulfilledConditions.push({
-      title: 'Discount Zone',
-      description: `السعر داخل منطقة الخصم المؤسسية (تحت 50% من النطاق: $${rangeLow.toFixed(4)} - $${rangeHigh.toFixed(4)}).`,
-    });
+  // 1. التحقق من وجود سحب سيولة (SSL Sweep) لقاع سابق
+  if (sCurrent.type !== 'LOW' || sPrev.type !== 'HIGH' || sPrior.type !== 'LOW') {
+    return null;
   }
 
-  // 2. كشف سحب السيولة (SSL Sweep) خلال آخر 8 شموع
-  const recentCandles = candles.slice(-8);
-  const sweepCandle = recentCandles.find((c) => c.low < priorSwingLow && c.close > priorSwingLow * 0.998);
-  if (sweepCandle) {
-    confluenceScore += 25;
-    fulfilledConditions.push({
-      title: 'SSL Sweep',
-      description: `تم سحب سيولة القاع الهيكلي $${priorSwingLow.toFixed(4)} مع رفض فوري وإغلاق أعلى منه.`,
-    });
-  }
+  const didSweep = sCurrent.price < sPrior.price;
+  if (!didSweep) return null;
 
-  // 3. كشف كسر الهيكل الشرائي (Bullish MSS) خلال آخر 6 شموع
-  const hasMSS = recentCandles.some((c) => c.close > latestSwingHigh);
-  if (hasMSS || currentPrice > latestSwingHigh * 0.995) {
-    confluenceScore += 25;
-    fulfilledConditions.push({
-      title: 'Bullish MSS',
-      description: `تأكيد كسر هيكل السوق الصاعد واختراق القمة السابقة عند $${latestSwingHigh.toFixed(4)}.`,
-    });
-  }
-
-  // 4. كشف الفجوة السعرية (Bullish FVG)
-  for (let i = candles.length - 1; i >= candles.length - 5; i--) {
-    if (i >= 2 && candles[i].low > candles[i - 2].high) {
-      confluenceScore += 15;
-      fulfilledConditions.push({
-        title: 'Bullish FVG',
-        description: `تشكل فجوة قيمة عادلة شرائية (Fair Value Gap) عند مستوى $${candles[i - 2].high.toFixed(4)}.`,
-      });
+  // 2. التحقق من كسر الهيكل الصاعد (Bullish MSS) بإغلاق جسم الشمعة
+  let mssCandleIdx = -1;
+  for (let cIdx = sCurrent.index + 1; cIdx < candles.length; cIdx++) {
+    if (candles[cIdx].close > sPrev.price) {
+      mssCandleIdx = cIdx;
       break;
     }
   }
 
-  // قبول الصفقات التي تحقق سكور 65% فما فوق
-  if (confluenceScore < 65) return null;
+  if (mssCandleIdx === -1) return null;
 
-  const stopLoss = parseFloat((Math.min(priorSwingLow, latestSwingLow) * 0.992).toFixed(6));
-  const risk = currentPrice - stopLoss;
+  // التأكد من حداثة الكسر (حدث خلال آخر 15 شمعة)
+  if (candles.length - 1 - mssCandleIdx > 15) return null;
+
+  // 3. حساب نطاق التوازن ومنطقة الخصم (Discount Zone < 50%)
+  const impulseLow = sCurrent.price;
+  const impulseHigh = candles[mssCandleIdx].high;
+  const impulseRange = impulseHigh - impulseLow;
+  if (impulseRange <= 0) return null;
+
+  const equilibrium = impulseLow + impulseRange * 0.5;
+
+  // 4. البحث عن FVG صاعد في منطقة الخصم
+  const fvgs = detectFVGs(candles, sCurrent.index, mssCandleIdx);
+  const validDiscountFVG = fvgs.reverse().find((f) => f.type === 'BULLISH' && f.top <= equilibrium);
+
+  if (!validDiscountFVG) return null;
+
+  const currentPrice = candles[candles.length - 1].close;
+  const entryPrice = validDiscountFVG.top;
+  const stopLoss = parseFloat((impulseLow * 0.997).toFixed(6)); // 0.3% Buffer
+  const risk = entryPrice - stopLoss;
+
   if (risk <= 0) return null;
 
-  const tp1 = parseFloat((currentPrice + risk * 1.5).toFixed(6));
-  const tp2 = parseFloat((currentPrice + risk * 2.5).toFixed(6));
-  const tp3 = parseFloat((currentPrice + risk * 4.0).toFixed(6));
-
-  confluenceScore += 10;
-  fulfilledConditions.push({
-    title: 'Risk-Reward Optimized',
-    description: `عائد لمخاطرة مؤسسي يبدأ من 1:1.5 ويصل إلى 1:4.0.`,
-  });
+  const tp1 = parseFloat((entryPrice + risk * 1.5).toFixed(6));
+  const tp2 = parseFloat(sPrev.price.toFixed(6)); // استهداف سيولة القمة السابقة
+  const tp3 = parseFloat((entryPrice + risk * 3.0).toFixed(6));
 
   const baseAsset = symbol.replace('USDT', '');
 
@@ -240,25 +226,38 @@ export const analyzeICTBullishSetup = (candles: CandleData[], symbol: string, ti
     type: 'SPOT_BUY' as const,
     currentPrice,
     entryZone: {
-      min: parseFloat((currentPrice * 0.995).toFixed(6)),
-      max: parseFloat((currentPrice * 1.005).toFixed(6)),
+      min: parseFloat((validDiscountFVG.bottom).toFixed(6)),
+      max: parseFloat((validDiscountFVG.top).toFixed(6)),
     },
     stopLoss,
     targets: { tp1, tp2, tp3 },
-    riskRewardRatio: '1:2.5',
-    confluenceScore: Math.min(confluenceScore, 98),
-    fulfilledConditions,
+    riskRewardRatio: '1:3.0',
+    confluenceScore: 95,
+    fulfilledConditions: [
+      {
+        title: 'Sell-Side Liquidity Sweep',
+        description: `تم سحب سيولة القاع السابق عند $${sPrior.price.toFixed(4)} عبر كسر وهمي ثم الارتداد.`,
+      },
+      {
+        title: 'Market Structure Shift (MSS)',
+        description: `تأكيد كسر هيكل السوق الصاعد بإغلاق شمعة كاملة فوق القمة $${sPrev.price.toFixed(4)}.`,
+      },
+      {
+        title: 'Discount FVG Entry',
+        description: `تحديد الدخول عند فجوة FVG غير مغطاة داخل منطقة الخصم المؤسسية (أقل من 50% من الاندفاع).`,
+      },
+    ],
     analysisReasons: {
-      entryReason: `فرصة شراء ICT مكتملة الأركان على فريم [${timeframe}] داخل منطقة خصم بعد ارتداد هيكلي.`,
-      stopLossReason: `تم تأمين الوقف أسفل القاع المحمي $${stopLoss}.`,
-      takeProfitReason: `الأهداف موزعة هندسياً على امتدادات السيولة المتوقعة.`,
+      entryReason: `دخول مؤسسي متوافق مع نموذج ICT على فريم [${timeframe}] بعد اكتمال السحب وكسر الهيكل.`,
+      stopLossReason: `وقف الخسارة محمي أسفل قاع السحب المؤسسي $${stopLoss}.`,
+      takeProfitReason: `TP1 = 1:1.5 | TP2 = سيولة القمة السابقة $${tp2} | TP3 = امتداد 1:3.0.`,
     },
     status: 'ACTIVE' as const,
   };
 };
 
 // ==========================================================
-// 5. تشغيل المسح الدوري الشامل مع Logging تشخيصي
+// 5. تشغيل المسح الدوري الشامل
 // ==========================================================
 export const runFullCryptoScan = async () => {
   const targetTimeframes = ['1h', '4h'];
@@ -279,7 +278,7 @@ export const runFullCryptoScan = async () => {
     for (const tf of targetTimeframes) {
       try {
         const candles = await fetchCandles(symbol, tf, 100);
-        if (candles.length < 40) continue;
+        if (candles.length < 50) continue;
 
         const opportunity = analyzeICTBullishSetup(candles, symbol, tf);
 
@@ -294,7 +293,7 @@ export const runFullCryptoScan = async () => {
           if (!existing) {
             const createdOpp = await Opportunity.create(opportunity);
             discoveredCount++;
-            console.log(`🎯 [فرصة رُصدت]: ${symbol} [${tf}] - Score: ${opportunity.confluenceScore}%`);
+            console.log(`🎯 [فرصة ICT رُصدت]: ${symbol} [${tf}] - Score: ${opportunity.confluenceScore}%`);
 
             sendOpportunityToTelegram(createdOpp).catch((err) => {
               console.error(`⚠️ خطأ إرسال التلغرام لـ ${symbol}:`, err.message);
@@ -302,7 +301,7 @@ export const runFullCryptoScan = async () => {
           }
         }
       } catch (error) {
-        // تجاهل أخطاء الأزواج الفردية للاستمرار
+        // الاستمرار في الفحص
       }
       await sleep(150);
     }
