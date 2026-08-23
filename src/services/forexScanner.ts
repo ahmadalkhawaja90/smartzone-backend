@@ -3,28 +3,49 @@ import { sendForexOpportunityToTelegram } from './telegramForex';
 
 const API_KEY = process.env.TWELVE_DATA_API_KEY || '7d5b98c57c0c4c05b856c93fdaebd37b';
 
-// الأصول الأساسية: الذهب وأزواج الفوركس عالية السيولة
+// الأصول الأساسية: الذهب، الفضة، والعملات الرئيسية
 const TARGET_ASSETS = [
-  { symbol: 'XAU/USD', yahooTicker: 'GC=F', isGold: true },
-  { symbol: 'EUR/USD', yahooTicker: 'EURUSD=X', isGold: false },
-  { symbol: 'GBP/USD', yahooTicker: 'GBPUSD=X', isGold: false },
-  { symbol: 'USD/JPY', yahooTicker: 'USDJPY=X', isGold: false },
-  { symbol: 'AUD/USD', yahooTicker: 'AUDUSD=X', isGold: false },
-  { symbol: 'GBP/JPY', yahooTicker: 'GBPJPY=X', isGold: false },
+  { symbol: 'XAU/USD', yahooTicker: 'GC=F', decimals: 2, slBuffer: 1.5 },
+  { symbol: 'XAG/USD', yahooTicker: 'SI=F', decimals: 3, slBuffer: 0.05 },
+  { symbol: 'EUR/USD', yahooTicker: 'EURUSD=X', decimals: 5, slBuffer: 0.0008 },
+  { symbol: 'GBP/USD', yahooTicker: 'GBPUSD=X', decimals: 5, slBuffer: 0.0009 },
+  { symbol: 'USD/JPY', yahooTicker: 'USDJPY=X', decimals: 3, slBuffer: 0.15 },
+  { symbol: 'AUD/USD', yahooTicker: 'AUDUSD=X', decimals: 5, slBuffer: 0.0008 },
+  { symbol: 'GBP/JPY', yahooTicker: 'GBPJPY=X', decimals: 3, slBuffer: 0.18 },
 ];
+
+export interface CandleData {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+interface SwingPoint {
+  index: number;
+  price: number;
+  type: 'HIGH' | 'LOW';
+}
+
+interface FVG {
+  startIndex: number;
+  top: number;
+  bottom: number;
+  type: 'BULLISH' | 'BEARISH';
+}
 
 const sentForexCache = new Map<string, number>();
 
 // ==========================================================
-// 1. جلب الشموع البيانية (Twelve Data مع Fallback إلى Yahoo)
+// 1. جلب الشموع البيانية
 // ==========================================================
-const fetchForexCandles = async (symbolObj: typeof TARGET_ASSETS[0], interval = '1h', outputsize = 70) => {
+const fetchForexCandles = async (asset: typeof TARGET_ASSETS[0], interval: '15m' | '1h', outputsize = 80): Promise<CandleData[]> => {
   const intervalParam = interval === '15m' ? '15min' : '1h';
-  
-  // 1. محاولة Twelve Data أولاً
+
+  // 1. محاولة Twelve Data
   try {
     const res = await axios.get('https://api.twelvedata.com/time_series', {
-      params: { symbol: symbolObj.symbol, interval: intervalParam, outputsize, apikey: API_KEY },
+      params: { symbol: asset.symbol, interval: intervalParam, outputsize, apikey: API_KEY },
       timeout: 10000,
     });
 
@@ -39,29 +60,28 @@ const fetchForexCandles = async (symbolObj: typeof TARGET_ASSETS[0], interval = 
         .reverse();
     }
   } catch {
-    // الانتقال للمصدر البديل عند الخطأ أو انتهاء الـ API Limit
+    // الانتقال إلى Yahoo Finance
   }
 
-  // 2. مصدر احتياطي فوري (Yahoo Finance)
+  // 2. Yahoo Finance كبديل فوري
   try {
     const yInterval = interval === '15m' ? '15m' : '60m';
     const range = interval === '15m' ? '5d' : '30d';
-    const res = await axios.get(`https://query2.finance.yahoo.com/v8/finance/chart/${symbolObj.yahooTicker}?interval=${yInterval}&range=${range}`, {
+    const res = await axios.get(`https://query2.finance.yahoo.com/v8/finance/chart/${asset.yahooTicker}?interval=${yInterval}&range=${range}`, {
       headers: { 'User-Agent': 'Mozilla/5.0' },
       timeout: 10000,
     });
-    
-    const result = res.data?.chart?.result?.[0];
-    const quote = result?.indicators?.quote?.[0];
+
+    const quote = res.data?.chart?.result?.[0]?.indicators?.quote?.[0];
     if (quote?.close?.length) {
-      const candles: any[] = [];
+      const candles: CandleData[] = [];
       for (let i = 0; i < quote.close.length; i++) {
         if (quote.open[i] && quote.high[i] && quote.low[i] && quote.close[i]) {
           candles.push({
-            open: quote.open[i],
-            high: quote.high[i],
-            low: quote.low[i],
-            close: quote.close[i],
+            open: parseFloat(quote.open[i].toFixed(asset.decimals)),
+            high: parseFloat(quote.high[i].toFixed(asset.decimals)),
+            low: parseFloat(quote.low[i].toFixed(asset.decimals)),
+            close: parseFloat(quote.close[i].toFixed(asset.decimals)),
           });
         }
       }
@@ -75,121 +95,116 @@ const fetchForexCandles = async (symbolObj: typeof TARGET_ASSETS[0], interval = 
 };
 
 // ==========================================================
-// 2. أدوات تحديد القمم والقيعان (Swing Points)
+// 2. أدوات الهيكل المؤسسي
 // ==========================================================
-const findSwingLows = (candles: any[], leftRight = 2) => {
-  const lows: any[] = [];
+const findSwings = (candles: CandleData[], leftRight = 3): SwingPoint[] => {
+  const swings: SwingPoint[] = [];
   for (let i = leftRight; i < candles.length - leftRight; i++) {
-    const left = candles.slice(i - leftRight, i);
-    const right = candles.slice(i + 1, i + 1 + leftRight);
-    if (left.every((c) => c.low >= candles[i].low) && right.every((c) => c.low >= candles[i].low)) {
-      lows.push({ index: i, price: candles[i].low });
-    }
+    const isHigh = candles.slice(i - leftRight, i + leftRight + 1).every((c, idx) => idx === leftRight || c.high <= candles[i].high);
+    const isLow = candles.slice(i - leftRight, i + leftRight + 1).every((c, idx) => idx === leftRight || c.low >= candles[i].low);
+
+    if (isHigh) swings.push({ index: i, price: candles[i].high, type: 'HIGH' });
+    if (isLow) swings.push({ index: i, price: candles[i].low, type: 'LOW' });
   }
-  return lows;
+  return swings;
 };
 
-const findSwingHighs = (candles: any[], leftRight = 2) => {
-  const highs: any[] = [];
-  for (let i = leftRight; i < candles.length - leftRight; i++) {
-    const left = candles.slice(i - leftRight, i);
-    const right = candles.slice(i + 1, i + 1 + leftRight);
-    if (left.every((c) => c.high <= candles[i].high) && right.every((c) => c.high <= candles[i].high)) {
-      highs.push({ index: i, price: candles[i].high });
+const detectFVGs = (candles: CandleData[], startIdx: number, endIdx: number): FVG[] => {
+  const fvgs: FVG[] = [];
+  for (let i = startIdx; i < endIdx - 2; i++) {
+    const c1 = candles[i];
+    const c3 = candles[i + 2];
+
+    if (c1.high < c3.low) {
+      fvgs.push({ startIndex: i, top: c3.low, bottom: c1.high, type: 'BULLISH' });
+    } else if (c1.low > c3.high) {
+      fvgs.push({ startIndex: i, top: c1.low, bottom: c3.high, type: 'BEARISH' });
     }
   }
-  return highs;
-};
-
-// ==========================================================
-// 3. خوارزمية التحليل الهيكلي المؤسسي ICT
-// ==========================================================
-const analyzeForexICTSetup = (candles: any[], symbol: string, timeframe: '15m' | '1h') => {
-  if (!candles || candles.length < 35) return null;
-
-  const currentCandle = candles[candles.length - 1];
-  const currentPrice = currentCandle.close;
-
-  const swingLows = findSwingLows(candles, 2);
-  const swingHighs = findSwingHighs(candles, 2);
-
-  if (swingLows.length < 2 || swingHighs.length < 1) return null;
-
-  const priorSwingLow = swingLows[swingLows.length - 2].price;
-  const latestSwingLow = swingLows[swingLows.length - 1];
-  const latestSwingHigh = swingHighs[swingHighs.length - 1];
-
-  // فلتر منطقة الخصم (Discount Zone - تحت 50% من الحركة الأخيرة)
-  const rangeLow = Math.min(latestSwingLow.price, latestSwingHigh.price);
-  const rangeHigh = Math.max(latestSwingLow.price, latestSwingHigh.price);
-  const midpoint = (rangeLow + rangeHigh) / 2;
-  
-  if (currentPrice > midpoint * 1.002) return null; // هامش مرونة بسيط
-
-  let score = 35;
-  const conditions: string[] = ['التمركز داخل منطقة الخصم (Discount Zone)'];
-
-  // 1. سحب السيولة (SSL Sweep) خلال آخر 8 شموع
-  const recentCandles = candles.slice(-8);
-  const sweepCandle = recentCandles.find((c) => c.low < priorSwingLow && c.close > priorSwingLow * 0.999);
-  if (sweepCandle) {
-    score += 25;
-    conditions.push('سحب سيولة القاع الهيكلي (SSL Sweep)');
-  }
-
-  // 2. كسر وتغيير هيكل السوق (Bullish MSS) خلال آخر 6 شموع
-  const prevSwingHigh = latestSwingHigh.price;
-  const hasMSS = recentCandles.some((c) => c.close > prevSwingHigh) || currentPrice > prevSwingHigh * 0.999;
-  if (hasMSS) {
-    score += 25;
-    conditions.push('كسر وتغيير هيكل السوق الصاعد (Bullish MSS)');
-  }
-
-  // 3. فجوة القيمة العادلة (Bullish FVG)
-  for (let i = candles.length - 1; i >= candles.length - 4; i--) {
-    if (i >= 2 && candles[i].low > candles[i - 2].high) {
-      score += 15;
-      conditions.push('فجوة قيمة عادلة شرائية (Bullish FVG)');
-      break;
-    }
-  }
-
-  if (score < 60) return null;
-
-  const isJpy = symbol.includes('JPY');
-  const isGold = symbol.includes('XAU') || symbol.includes('GOLD');
-  const slBuffer = isGold ? 1.5 : (isJpy ? 0.15 : 0.0008);
-  const decimals = isGold ? 2 : (isJpy ? 3 : 5);
-
-  const stopLoss = parseFloat((Math.min(priorSwingLow, latestSwingLow.price) - slBuffer).toFixed(decimals));
-  const risk = currentPrice - stopLoss;
-
-  if (risk <= 0) return null;
-
-  const tp1 = parseFloat((currentPrice + risk * 1.5).toFixed(decimals));
-  const tp2 = parseFloat((currentPrice + risk * 2.5).toFixed(decimals));
-  const tp3 = parseFloat((currentPrice + risk * 4.0).toFixed(decimals));
-
-  return {
-    symbol,
-    type: 'BUY',
-    strategy: `ICT Institutional Setup 🏛️`,
-    timeframe,
-    currentPrice: parseFloat(currentPrice.toFixed(decimals)),
-    entryZone: {
-      min: parseFloat((currentPrice * 0.999).toFixed(decimals)),
-      max: parseFloat((currentPrice * 1.001).toFixed(decimals)),
-    },
-    stopLoss,
-    targets: { tp1, tp2, tp3 },
-    riskRewardRatio: '1:2.5',
-    confluenceScore: Math.min(score, 95),
-    fulfilledConditions: conditions.map((c) => ({ title: c })),
-  };
+  return fvgs;
 };
 
 // ==========================================================
-// 4. تشغيل الفحص الدوري للفوركس والمعادن
+// 3. خوارزمية التحليل المؤسسي (ICT Strict Engine)
+// ==========================================================
+const analyzeForexICTSetup = (candles: CandleData[], asset: typeof TARGET_ASSETS[0], timeframe: '15m' | '1h') => {
+  if (!candles || candles.length < 50) return null;
+
+  const swings = findSwings(candles, 3);
+  if (swings.length < 5) return null;
+
+  const sCurrent = swings[swings.length - 1];
+  const sPrev = swings[swings.length - 2];
+  const sPrior = swings[swings.length - 3];
+
+  // 1. فحص نموذج الشراء المؤسسي (Bullish ICT)
+  if (sCurrent.type === 'LOW' && sPrev.type === 'HIGH' && sPrior.type === 'LOW') {
+    // سحب سيولة من قاع سابق
+    const didSweep = sCurrent.price < sPrior.price;
+    if (!didSweep) return null;
+
+    // كسر الهيكل الصاعد (Bullish MSS) بإغلاق جسم الشمعة
+    let mssCandleIdx = -1;
+    for (let cIdx = sCurrent.index + 1; cIdx < candles.length; cIdx++) {
+      if (candles[cIdx].close > sPrev.price) {
+        mssCandleIdx = cIdx;
+        break;
+      }
+    }
+
+    if (mssCandleIdx === -1 || candles.length - 1 - mssCandleIdx > 12) return null;
+
+    // التحقق من منطقة الخصم (Discount < 50%)
+    const impulseLow = sCurrent.price;
+    const impulseHigh = candles[mssCandleIdx].high;
+    const impulseRange = impulseHigh - impulseLow;
+    if (impulseRange <= 0) return null;
+
+    const equilibrium = impulseLow + impulseRange * 0.5;
+
+    // البحث عن FVG داخل منطقة الخصم
+    const fvgs = detectFVGs(candles, sCurrent.index, mssCandleIdx);
+    const validFVG = fvgs.reverse().find((f) => f.type === 'BULLISH' && f.top <= equilibrium);
+
+    if (!validFVG) return null;
+
+    const entryPrice = validFVG.top;
+    const stopLoss = parseFloat((impulseLow - asset.slBuffer).toFixed(asset.decimals));
+    const risk = entryPrice - stopLoss;
+    if (risk <= 0) return null;
+
+    const currentPrice = candles[candles.length - 1].close;
+    const tp1 = parseFloat((entryPrice + risk * 1.5).toFixed(asset.decimals));
+    const tp2 = parseFloat(sPrev.price.toFixed(asset.decimals)); // سيولة القمة السابقة
+    const tp3 = parseFloat((entryPrice + risk * 3.0).toFixed(asset.decimals));
+
+    return {
+      symbol: asset.symbol,
+      type: 'BUY',
+      strategy: 'ICT Institutional Setup 🏛️',
+      timeframe,
+      currentPrice: parseFloat(currentPrice.toFixed(asset.decimals)),
+      entryZone: {
+        min: parseFloat(validFVG.bottom.toFixed(asset.decimals)),
+        max: parseFloat(validFVG.top.toFixed(asset.decimals)),
+      },
+      stopLoss,
+      targets: { tp1, tp2, tp3 },
+      riskRewardRatio: '1:2.5',
+      confluenceScore: 95,
+      fulfilledConditions: [
+        { title: 'Sell-Side Liquidity Sweep (SSL)' },
+        { title: 'Market Structure Shift (MSS Body Close)' },
+        { title: 'Discount Fair Value Gap (FVG)' },
+      ],
+    };
+  }
+
+  return null;
+};
+
+// ==========================================================
+// 4. تشغيل الفحص الدوري للفوركس والمعادن (15m, 1h)
 // ==========================================================
 export const runForexScan = async () => {
   try {
@@ -198,15 +213,14 @@ export const runForexScan = async () => {
 
     for (const asset of TARGET_ASSETS) {
       for (const tf of targetTimeframes) {
-        const candles = await fetchForexCandles(asset, tf, 60);
+        const candles = await fetchForexCandles(asset, tf, 80);
 
-        if (candles.length < 35) continue;
+        if (candles.length < 50) continue;
 
-        const setup = analyzeForexICTSetup(candles, asset.symbol, tf);
+        const setup = analyzeForexICTSetup(candles, asset, tf);
 
-        if (setup && setup.confluenceScore >= 60) {
-          // منع تكرار نفس الصفقة لمدة ساعتين
-          const cacheKey = `${asset.symbol}_${tf}_${setup.type}_${Math.floor(Date.now() / (2 * 60 * 60 * 1000))}`;
+        if (setup && setup.confluenceScore >= 85) {
+          const cacheKey = `${asset.symbol}_${tf}_${setup.type}_${Math.floor(Date.now() / (3 * 60 * 60 * 1000))}`;
           if (!sentForexCache.has(cacheKey)) {
             const sent = await sendForexOpportunityToTelegram(setup);
             if (sent) {
@@ -215,9 +229,10 @@ export const runForexScan = async () => {
             }
           }
         }
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((r) => setTimeout(r, 1000));
       }
     }
+    console.log(`✨ [Forex Scanner] اكتمل فحص الفوركس والمعادن.`);
   } catch (error: any) {
     console.error('❌ خطأ في مسح الفوركس:', error.message);
   }
