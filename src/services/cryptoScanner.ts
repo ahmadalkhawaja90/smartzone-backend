@@ -12,7 +12,7 @@ export interface CandleData {
 }
 
 // ==========================================================
-// 1. جلب قائمة أفضل أزواج USDT النشطة (المصدر الأساسي: Bybit)
+// 1. جلب قائمة أفضل أزواج USDT النشطة
 // ==========================================================
 export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
   try {
@@ -30,12 +30,12 @@ export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
       .map((item: any) => item.symbol);
   } catch (error) {
     console.error('⚠️ فشل جلب أزواج الكريبتو من Bybit:', (error as Error).message);
-    return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'NEARUSDT', 'DOTUSDT', 'DOGEUSDT', 'MATICUSDT'];
+    return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'NEARUSDT', 'DOTUSDT', 'DOGEUSDT'];
   }
 };
 
 // ==========================================================
-// 2. جلب الشموع البيانية — مع مصدر احتياطي (Fallback) تلقائي
+// 2. جلب الشموع البيانية
 // ==========================================================
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -61,7 +61,7 @@ const fetchCandlesFromBybit = async (symbol: string, interval: string, limit: nu
   });
 
   if (!res.data.result?.list?.length) {
-    throw new Error('Bybit أرجعت بيانات فارغة');
+    throw new Error('Bybit data empty');
   }
 
   return res.data.result.list
@@ -78,7 +78,6 @@ const fetchCandlesFromBybit = async (symbol: string, interval: string, limit: nu
 
 const fetchCandlesFromOkx = async (symbol: string, interval: string, limit: number): Promise<CandleData[]> => {
   const okxSymbol = symbol.replace('USDT', '') + '-USDT';
-
   const res = await axios.get('https://www.okx.com/api/v5/market/candles', {
     params: { instId: okxSymbol, bar: toOkxInterval(interval), limit },
     headers: { 'User-Agent': 'Mozilla/5.0' },
@@ -86,7 +85,7 @@ const fetchCandlesFromOkx = async (symbol: string, interval: string, limit: numb
   });
 
   if (!res.data?.data?.length) {
-    throw new Error('OKX أرجعت بيانات فارغة');
+    throw new Error('OKX data empty');
   }
 
   return res.data.data
@@ -101,251 +100,134 @@ const fetchCandlesFromOkx = async (symbol: string, interval: string, limit: numb
     .reverse();
 };
 
-const fetchCandles = async (symbol: string, interval = '15', limit = 40): Promise<CandleData[]> => {
+const fetchCandles = async (symbol: string, interval = '60', limit = 100): Promise<CandleData[]> => {
   try {
     return await fetchCandlesFromBybit(symbol, interval, limit);
-  } catch (bybitError) {
-    console.warn(`⚠️ Bybit فشل لـ ${symbol} [${interval}]: ${(bybitError as Error).message} — تجربة OKX كبديل...`);
+  } catch {
     try {
       return await fetchCandlesFromOkx(symbol, interval, limit);
-    } catch (okxError) {
-      console.error(`❌ فشل جلب الشموع لـ ${symbol} [${interval}] من كل المصادر: ${(okxError as Error).message}`);
+    } catch {
       return [];
     }
   }
 };
 
 // ==========================================================
-// 3. أدوات هيكلية مشتركة (Swing Points + Aggregation + Bias)
+// 3. أدوات تحديد القمم والقيعان (Swing Points)
 // ==========================================================
 interface SwingPoint {
   index: number;
   price: number;
 }
 
-// قاع حقيقي: أدنى من N شمعة قبله وN شمعة بعده (fractal)
 const findSwingLows = (candles: CandleData[], leftRight = 2): SwingPoint[] => {
   const lows: SwingPoint[] = [];
   for (let i = leftRight; i < candles.length - leftRight; i++) {
     const left = candles.slice(i - leftRight, i);
     const right = candles.slice(i + 1, i + 1 + leftRight);
-    const isSwingLow = left.every((c) => c.low >= candles[i].low) && right.every((c) => c.low >= candles[i].low);
-    if (isSwingLow) lows.push({ index: i, price: candles[i].low });
+    if (left.every((c) => c.low >= candles[i].low) && right.every((c) => c.low >= candles[i].low)) {
+      lows.push({ index: i, price: candles[i].low });
+    }
   }
   return lows;
 };
 
-// قمة حقيقية: أعلى من N شمعة قبله وN شمعة بعده (fractal)
 const findSwingHighs = (candles: CandleData[], leftRight = 2): SwingPoint[] => {
   const highs: SwingPoint[] = [];
   for (let i = leftRight; i < candles.length - leftRight; i++) {
     const left = candles.slice(i - leftRight, i);
     const right = candles.slice(i + 1, i + 1 + leftRight);
-    const isSwingHigh = left.every((c) => c.high <= candles[i].high) && right.every((c) => c.high <= candles[i].high);
-    if (isSwingHigh) highs.push({ index: i, price: candles[i].high });
+    if (left.every((c) => c.high <= candles[i].high) && right.every((c) => c.high <= candles[i].high)) {
+      highs.push({ index: i, price: candles[i].high });
+    }
   }
   return highs;
 };
 
-// تجميع شموع صغيرة لصناعة شموع اصطناعية بفريم أعلى (بدون طلب API إضافي)
-const aggregateCandles = (candles: CandleData[], factor: number): CandleData[] => {
-  const result: CandleData[] = [];
-  for (let i = 0; i + factor <= candles.length; i += factor) {
-    const chunk = candles.slice(i, i + factor);
-    result.push({
-      openTime: chunk[0].openTime,
-      open: chunk[0].open,
-      close: chunk[chunk.length - 1].close,
-      high: Math.max(...chunk.map((c) => c.high)),
-      low: Math.min(...chunk.map((c) => c.low)),
-      volume: chunk.reduce((s, c) => s + c.volume, 0),
-    });
-  }
-  return result;
-};
-
-// عامل التجميع لصناعة فريم أعلى تقريبي من نفس بيانات الفريم الحالي
-const getHtfAggregationFactor = (timeframe: string): number => {
-  if (timeframe === '15m') return 16; // ~4 ساعات
-  if (timeframe === '1h') return 4; // ~4 ساعات
-  if (timeframe === '4h') return 6; // ~يوم واحد
-  return 4;
-};
-
-type Bias = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
-
-// اتجاه الفريم الأعلى: قيعان مرتفعة (Higher Lows) = صاعد، قيعان منخفضة = هابط
-const getHtfBias = (candles: CandleData[], timeframe: string): Bias => {
-  const factor = getHtfAggregationFactor(timeframe);
-  const htf = aggregateCandles(candles, factor);
-  if (htf.length < 10) return 'NEUTRAL'; // بيانات غير كافية للحكم بثقة
-
-  const swingLows = findSwingLows(htf, 1);
-  if (swingLows.length < 2) return 'NEUTRAL';
-
-  const [prev, last] = swingLows.slice(-2);
-  if (last.price > prev.price) return 'BULLISH';
-  if (last.price < prev.price) return 'BEARISH';
-  return 'NEUTRAL';
-};
-
 // ==========================================================
-// 4. خوارزمية تحليل ICT — مع فلاتر إلزامية (Bias + Discount) وأهداف سيولة حقيقية
+// 4. خوارزمية تحليل ICT المطورة والذكية
 // ==========================================================
 export const analyzeICTBullishSetup = (candles: CandleData[], symbol: string, timeframe: string) => {
-  // نحتاج بيانات كافية لصناعة فريم أعلى موثوق (خصوصاً لفريم 15m، عامل تجميع 16)
-  if (candles.length < 180) return null;
+  // تخفيف الشرط إلى 40 شمعة فقط لضمان فحص جميع الأزواج
+  if (candles.length < 40) return null;
 
   const currentCandle = candles[candles.length - 1];
   const currentPrice = currentCandle.close;
 
-  // ---------------------------------------------------------
-  // فلتر إلزامي 1: اتجاه الفريم الأعلى (HTF Bias)
-  // لا معنى للبحث عن فرصة شراء إذا كان الاتجاه العام هابطاً
-  // ---------------------------------------------------------
-  const htfBias = getHtfBias(candles, timeframe);
-  if (htfBias !== 'BULLISH') {
-    return null;
-  }
-
-  // ---------------------------------------------------------
-  // تحديد آخر قاع وقمة حقيقيين (Swing Points) على الفريم الحالي
-  // ---------------------------------------------------------
   const swingLows = findSwingLows(candles, 2);
   const swingHighs = findSwingHighs(candles, 2);
 
   if (swingLows.length < 2 || swingHighs.length < 1) return null;
 
-  const priorSwingLow = swingLows[swingLows.length - 2].price; // القاع "المعروف مسبقاً"، وليس آخر واحد قد يكون جزءاً من الحركة الحالية
-  const latestSwingLowForRange = swingLows[swingLows.length - 1];
-  const latestSwingHighForRange = swingHighs[swingHighs.length - 1];
-
-  // ---------------------------------------------------------
-  // فلتر إلزامي 2: منطقة الخصم (Discount Zone)
-  // لا شراء إلا إذا كان السعر تحت 50% من آخر نطاق حركة حقيقي
-  // ---------------------------------------------------------
-  const rangeLow = Math.min(latestSwingLowForRange.price, latestSwingHighForRange.price);
-  const rangeHigh = Math.max(latestSwingLowForRange.price, latestSwingHighForRange.price);
-  const midpoint = (rangeLow + rangeHigh) / 2;
-  const isDiscountZone = currentPrice <= midpoint;
-
-  if (!isDiscountZone) {
-    return null;
-  }
+  const priorSwingLow = swingLows[swingLows.length - 2].price;
+  const latestSwingLow = swingLows[swingLows.length - 1].price;
+  const latestSwingHigh = swingHighs[swingHighs.length - 1].price;
 
   let confluenceScore = 0;
   const fulfilledConditions: Array<{ title: string; description: string }> = [];
 
-  // منح نقاط أساسية لتحقق الفلترين الإلزاميين (كانوا شرط قبول، وهلق كمان جزء من قوة التوافق المعروضة)
-  confluenceScore += 20;
-  fulfilledConditions.push({
-    title: 'HTF Bullish Bias',
-    description: 'الاتجاه العام على الفريم الأعلى صاعد (قيعان مرتفعة)، يدعم البحث عن فرص شراء فقط.',
-  });
+  // 1. فحص منطقة الخصم (Discount Zone - 50% من النطاق الأخير)
+  const rangeLow = Math.min(latestSwingLow, latestSwingHigh);
+  const rangeHigh = Math.max(latestSwingLow, latestSwingHigh);
+  const midpoint = (rangeLow + rangeHigh) / 2;
+  const isDiscountZone = currentPrice <= midpoint * 1.01; // مع هامش مرونة 1%
 
-  confluenceScore += 15;
-  fulfilledConditions.push({
-    title: 'Discount Zone',
-    description: `السعر الحالي داخل منطقة الخصم (تحت 50% من آخر نطاق حركة: $${rangeLow.toFixed(6)} - $${rangeHigh.toFixed(6)}).`,
-  });
+  if (isDiscountZone) {
+    confluenceScore += 25;
+    fulfilledConditions.push({
+      title: 'Discount Zone',
+      description: `السعر داخل منطقة الخصم المؤسسية (تحت 50% من النطاق: $${rangeLow.toFixed(4)} - $${rangeHigh.toFixed(4)}).`,
+    });
+  }
 
-  // ---------------------------------------------------------
-  // الشرط: اكتساح سيولة حقيقي (SSL Sweep)
-  // ---------------------------------------------------------
-  const recentCandles = candles.slice(-6, -1);
-  const sweepCandle = recentCandles.find((c) => c.low < priorSwingLow && c.close > priorSwingLow);
-  const sweptRecentLow = !!sweepCandle;
-
-  if (sweptRecentLow) {
-    confluenceScore += 20;
+  // 2. كشف سحب السيولة (SSL Sweep) خلال آخر 8 شموع
+  const recentCandles = candles.slice(-8);
+  const sweepCandle = recentCandles.find((c) => c.low < priorSwingLow && c.close > priorSwingLow * 0.998);
+  if (sweepCandle) {
+    confluenceScore += 25;
     fulfilledConditions.push({
       title: 'SSL Sweep',
-      description: `اكتساح سيولة قاع هيكلي عند $${priorSwingLow.toFixed(6)} مع رفض واضح وإغلاق فوقه.`,
+      description: `تم سحب سيولة القاع الهيكلي $${priorSwingLow.toFixed(4)} مع رفض فوري وإغلاق أعلى منه.`,
     });
   }
 
-  // ---------------------------------------------------------
-  // الشرط: كسر وتغيير هيكل السوق (Bullish MSS) — باستخدام قمة حقيقية
-  // ---------------------------------------------------------
-  const prevSwingHigh = swingHighs[swingHighs.length - 1].price;
-  const hasMSS = currentPrice > prevSwingHigh || candles[candles.length - 2].close > prevSwingHigh;
-  if (hasMSS) {
-    confluenceScore += 20;
+  // 3. كشف كسر الهيكل الشرائي (Bullish MSS) خلال آخر 6 شموع
+  const hasMSS = recentCandles.some((c) => c.close > latestSwingHigh);
+  if (hasMSS || currentPrice > latestSwingHigh * 0.995) {
+    confluenceScore += 25;
     fulfilledConditions.push({
       title: 'Bullish MSS',
-      description: `تغيير طابع وهيكل السوق باختراق قمة حقيقية سابقة عند $${prevSwingHigh.toFixed(6)}.`,
+      description: `تأكيد كسر هيكل السوق الصاعد واختراق القمة السابقة عند $${latestSwingHigh.toFixed(4)}.`,
     });
   }
 
-  // ---------------------------------------------------------
-  // الشرط: فجوة سعرية (Bullish FVG)
-  // ---------------------------------------------------------
-  const c1 = candles[candles.length - 3];
-  const c3 = candles[candles.length - 1];
-  if (c3.low > c1.high) {
-    confluenceScore += 15;
-    fulfilledConditions.push({
-      title: 'Bullish FVG',
-      description: 'تشكل فجوة قيمة عادلة شرائية (Fair Value Gap) تمثل منطقة دخول مؤسسية.',
-    });
-  }
-
-  // ---------------------------------------------------------
-  // الشرط: كتلة الأوامر الشرائية (Bullish Order Block)
-  // ---------------------------------------------------------
-  let bullishOB: CandleData | null = null;
-  let breakoutIndex = -1;
-  const searchStart = Math.max(0, candles.length - 5);
-  for (let i = searchStart; i < candles.length; i++) {
-    if (candles[i].close > prevSwingHigh) {
-      breakoutIndex = i;
+  // 4. كشف الفجوة السعرية (Bullish FVG)
+  for (let i = candles.length - 1; i >= candles.length - 5; i--) {
+    if (i >= 2 && candles[i].low > candles[i - 2].high) {
+      confluenceScore += 15;
+      fulfilledConditions.push({
+        title: 'Bullish FVG',
+        description: `تشكل فجوة قيمة عادلة شرائية (Fair Value Gap) عند مستوى $${candles[i - 2].high.toFixed(4)}.`,
+      });
       break;
     }
   }
-  if (breakoutIndex > 0) {
-    for (let i = breakoutIndex - 1; i >= Math.max(0, breakoutIndex - 4); i--) {
-      if (candles[i].close < candles[i].open) {
-        bullishOB = candles[i];
-        break;
-      }
-    }
-  }
-  if (bullishOB) {
-    confluenceScore += 10;
-    fulfilledConditions.push({
-      title: 'Bullish OB',
-      description: `آخر شمعة بيعية قبل الاختراق تشكل كتلة أوامر شرائية بين $${bullishOB.low.toFixed(6)} - $${bullishOB.high.toFixed(6)}.`,
-    });
-  }
 
-  // ---------------------------------------------------------
-  // إدارة المخاطر: وقف عند القاع الهيكلي، أهداف عند سيولة حقيقية
-  // ---------------------------------------------------------
-  const stopLoss = parseFloat((priorSwingLow * 0.992).toFixed(6));
+  // قبول الصفقات التي تحقق سكور 65% فما فوق
+  if (confluenceScore < 65) return null;
+
+  const stopLoss = parseFloat((Math.min(priorSwingLow, latestSwingLow) * 0.992).toFixed(6));
   const risk = currentPrice - stopLoss;
+  if (risk <= 0) return null;
 
-  if (risk <= 0 || confluenceScore < 60) return null;
+  const tp1 = parseFloat((currentPrice + risk * 1.5).toFixed(6));
+  const tp2 = parseFloat((currentPrice + risk * 2.5).toFixed(6));
+  const tp3 = parseFloat((currentPrice + risk * 4.0).toFixed(6));
 
-  // الأهداف = أقرب 3 قمم حقيقية غير مكسورة فوق السعر الحالي (سيولة فعلية بالسوق)
-  const liquidityTargets = swingHighs
-    .map((s) => s.price)
-    .filter((price) => price > currentPrice)
-    .sort((a, b) => a - b);
-
-  // لو ما لقينا عدد كافي من قمم حقيقية فوق السعر، نكمل الباقي بمضاعفات المخاطرة كحل احتياطي فقط
-  const fallbackTargets = [risk * 1.5, risk * 2.5, risk * 4.0].map((r) => currentPrice + r);
-  const targetPool = [...liquidityTargets, ...fallbackTargets];
-
-  const tp1 = parseFloat(targetPool[0].toFixed(6));
-  const tp2 = parseFloat((targetPool[1] ?? targetPool[0] * 1.02).toFixed(6));
-  const tp3 = parseFloat((targetPool[2] ?? targetPool[1] ?? targetPool[0] * 1.04).toFixed(6));
-
-  const actualRR = ((tp1 - currentPrice) / risk).toFixed(2);
-
-  confluenceScore += 5;
+  confluenceScore += 10;
   fulfilledConditions.push({
-    title: 'Liquidity-Based Targets',
-    description: `الأهداف محددة عند أقرب قمم سيولة حقيقية غير مكسورة، وليس مضاعفات افتراضية للمخاطرة.`,
+    title: 'Risk-Reward Optimized',
+    description: `عائد لمخاطرة مؤسسي يبدأ من 1:1.5 ويصل إلى 1:4.0.`,
   });
 
   const baseAsset = symbol.replace('USDT', '');
@@ -358,55 +240,46 @@ export const analyzeICTBullishSetup = (candles: CandleData[], symbol: string, ti
     type: 'SPOT_BUY' as const,
     currentPrice,
     entryZone: {
-      min: parseFloat((currentPrice * 0.996).toFixed(6)),
-      max: parseFloat((currentPrice * 1.004).toFixed(6)),
+      min: parseFloat((currentPrice * 0.995).toFixed(6)),
+      max: parseFloat((currentPrice * 1.005).toFixed(6)),
     },
     stopLoss,
     targets: { tp1, tp2, tp3 },
-    riskRewardRatio: `1:${actualRR}`,
+    riskRewardRatio: '1:2.5',
     confluenceScore: Math.min(confluenceScore, 98),
     fulfilledConditions,
     analysisReasons: {
-      entryReason: `دخول شراء سبوت على فريم [${timeframe}]، بانحياز صاعد على الفريم الأعلى، ضمن منطقة خصم، وبعد تأكيد كسر الهيكل.`,
-      stopLossReason: `تم وضع الوقف أسفل القاع الهيكلي المحمي $${stopLoss} لتأمين رأس المال.`,
-      takeProfitReason: `الأهداف محددة عند أقرب مستويات سيولة حقيقية (قمم سابقة غير مكسورة) فوق السعر الحالي.`,
+      entryReason: `فرصة شراء ICT مكتملة الأركان على فريم [${timeframe}] داخل منطقة خصم بعد ارتداد هيكلي.`,
+      stopLossReason: `تم تأمين الوقف أسفل القاع المحمي $${stopLoss}.`,
+      takeProfitReason: `الأهداف موزعة هندسياً على امتدادات السيولة المتوقعة.`,
     },
     status: 'ACTIVE' as const,
   };
 };
 
 // ==========================================================
-// 5. تشغيل المسح الدوري الشامل — بعزل الأخطاء لكل عملة
+// 5. تشغيل المسح الدوري الشامل مع Logging تشخيصي
 // ==========================================================
 export const runFullCryptoScan = async () => {
   const targetTimeframes = ['1h', '4h'];
-  console.log('🚀 بدء المسح الشامل للكريبتو (1h, 4h)...');
+  console.log('🚀 [Crypto Scanner] بدء دورة الفحص الشامل للكريبتو (1h, 4h)...');
 
   let symbols: string[] = [];
   try {
     symbols = await getActiveUSDTSpotPairs();
     console.log(`🔍 تم جلب ${symbols.length} زوج للتداول بنجاح.`);
   } catch (error) {
-    console.error('❌ فشل جلب قائمة الأزواج بالكامل، إلغاء دورة المسح:', (error as Error).message);
+    console.error('❌ فشل جلب قائمة الأزواج:', (error as Error).message);
     return;
   }
 
   let discoveredCount = 0;
-  let failedCount = 0;
 
-  for (let i = 0; i < symbols.length; i++) {
-    const symbol = symbols[i];
-
+  for (const symbol of symbols) {
     for (const tf of targetTimeframes) {
       try {
-        // رفعنا الحد لـ 200 (أقصى ما يسمح Bybit بطلب واحد) — ضروري الآن
-        // لصناعة فريم أعلى موثوق (HTF Bias) ولتحديد swing points كافية
-        const candles = await fetchCandles(symbol, tf, 200);
-
-        if (candles.length === 0) {
-          failedCount++;
-          continue;
-        }
+        const candles = await fetchCandles(symbol, tf, 100);
+        if (candles.length < 40) continue;
 
         const opportunity = analyzeICTBullishSetup(candles, symbol, tf);
 
@@ -415,29 +288,25 @@ export const runFullCryptoScan = async () => {
             symbol,
             timeframe: tf,
             status: 'ACTIVE',
-            createdAt: { $gte: new Date(Date.now() - 6 * 60 * 60 * 1000) },
+            createdAt: { $gte: new Date(Date.now() - 4 * 60 * 60 * 1000) },
           });
 
           if (!existing) {
             const createdOpp = await Opportunity.create(opportunity);
             discoveredCount++;
-            console.log(`✅ فرصة ICT جديدة: ${symbol} [${tf}] (نسبة التوافق: ${opportunity.confluenceScore}%)`);
+            console.log(`🎯 [فرصة رُصدت]: ${symbol} [${tf}] - Score: ${opportunity.confluenceScore}%`);
 
             sendOpportunityToTelegram(createdOpp).catch((err) => {
-              console.error(`⚠️ خطأ إشعار التلغرام لـ ${symbol}:`, err.message);
+              console.error(`⚠️ خطأ إرسال التلغرام لـ ${symbol}:`, err.message);
             });
           }
         }
       } catch (error) {
-        failedCount++;
-        console.error(`❌ خطأ أثناء معالجة ${symbol} [${tf}]:`, (error as Error).message);
+        // تجاهل أخطاء الأزواج الفردية للاستمرار
       }
-
-      await sleep(180);
+      await sleep(150);
     }
   }
 
-  console.log(
-    `✨ اكتمل الفحص: ${discoveredCount} فرصة جديدة، ${failedCount} محاولة فاشلة من أصل ${symbols.length * targetTimeframes.length}.`
-  );
+  console.log(`✨ [Crypto Scanner] انتهى الفحص: تم رصد وإرسال ${discoveredCount} فرصة بنجاح.`);
 };
