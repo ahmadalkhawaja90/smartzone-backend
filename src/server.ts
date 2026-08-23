@@ -15,9 +15,6 @@ const PORT = process.env.PORT || 8000;
 app.use(cors());
 app.use(express.json());
 
-// الاتصال بقاعدة البيانات
-connectDB();
-
 // مسارات الفحص الأساسية
 app.get('/', (req: Request, res: Response) => {
   res.send('🚀 SmartZone AI Backend is Running Successfully!');
@@ -27,11 +24,24 @@ app.get('/health', (req: Request, res: Response) => {
   res.json({ status: 'OK', timestamp: new Date() });
 });
 
-// بدء تشغيل الخادم
-app.listen(PORT, () => {
-  console.log(`📡 Server is running on port: ${PORT}`);
-});
+// بدء التشغيل
+const startServer = async () => {
+  try {
+    // 1. الاتصال بقاعدة البيانات أولاً
+    await connectDB();
 
-// تشغيل البوت والماسح الذكي في الخلفية للعمل الحقيقي المباشر
-initTelegramBot();
-initOpportunityScheduler();
+    // 2. تشغيل السيرفر
+    app.listen(PORT, () => {
+      console.log(`📡 Server is running on port: ${PORT}`);
+
+      // 3. تشغيل البوت والماسح الذكي في الخلفية
+      initTelegramBot();
+      initOpportunityScheduler();
+    });
+  } catch (error) {
+    console.error('❌ فشل بدء تشغيل السيرفر:', error);
+    process.exit(1);
+  }
+};
+
+startServer();
