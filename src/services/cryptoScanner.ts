@@ -12,8 +12,17 @@ export interface CandleData {
 }
 
 // ==========================================================
-// 1. جلب قائمة أفضل أزواج USDT النشطة
+// 1. جلب قائمة أفضل 30 زوج USDT نشط (تتضمن العملات الأساسية المؤكدة)
 // ==========================================================
+const CORE_TOP_PAIRS = [
+  'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 
+  'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'NEARUSDT', 'DOTUSDT',
+  'SUIUSDT', 'DOGEUSDT', 'TONUSDT', 'APTUSDT', 'MATICUSDT',
+  'LTCUSDT', 'BCHUSDT', 'ICPUSDT', 'FETUSDT', 'RENDERUSDT',
+  'INJUSDT', 'TAOUSDT', 'RNDRUSDT', 'PEPEUSDT', 'SHIBUSDT',
+  'OPUSDT', 'ARBUSDT', 'ATOMUSDT', 'FILUSDT', 'FTMUSDT'
+];
+
 export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
   try {
     const res = await axios.get('https://api.bybit.com/v5/market/tickers?category=spot', {
@@ -21,16 +30,20 @@ export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
       timeout: 10000,
     });
 
-    const blacklist = ['USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'BUSDUSDT', 'EURUSDT', 'DAIUSDT'];
+    const blacklist = ['USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'BUSDUSDT', 'EURUSDT', 'DAIUSDT', 'USDEUSDT'];
 
-    return res.data.result.list
+    const dynamicTop = res.data.result.list
       .filter((item: any) => item.symbol.endsWith('USDT') && !blacklist.includes(item.symbol))
       .sort((a: any, b: any) => parseFloat(b.turnover24h) - parseFloat(a.turnover24h))
-      .slice(0, 75)
+      .slice(0, 30)
       .map((item: any) => item.symbol);
+
+    // دمج العملات الأساسية المفحوصة والتأكد من عدم التكرار وضمان حصرها في أفضل 30
+    const combined = Array.from(new Set([...CORE_TOP_PAIRS.slice(0, 8), ...dynamicTop])).slice(0, 30);
+    return combined;
   } catch (error) {
-    console.error('⚠️ فشل جلب أزواج الكريبتو من Bybit:', (error as Error).message);
-    return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'NEARUSDT', 'DOTUSDT'];
+    console.error('⚠️ فشل جلب أزواج الكريبتو من Bybit، استخدام القائمة الافتراضية لأفضل 30 عملة:', (error as Error).message);
+    return CORE_TOP_PAIRS;
   }
 };
 
@@ -156,7 +169,7 @@ const detectFVGs = (candles: CandleData[], startIdx: number, endIdx: number): FV
 };
 
 // ==========================================================
-// 4. خوارزمية تحليل ICT المؤسسية المطابقة للباك-تيست
+// 4. خوارزمية تحليل ICT المؤسسية
 // ==========================================================
 export const analyzeICTBullishSetup = (candles: CandleData[], symbol: string, timeframe: string) => {
   if (candles.length < 50) return null;
@@ -164,12 +177,11 @@ export const analyzeICTBullishSetup = (candles: CandleData[], symbol: string, ti
   const swings = findSwings(candles, 3);
   if (swings.length < 5) return null;
 
-  // فحص آخر هيكل مكتمل
   const sCurrent = swings[swings.length - 1];
   const sPrev = swings[swings.length - 2];
   const sPrior = swings[swings.length - 3];
 
-  // 1. التحقق من وجود سحب سيولة (SSL Sweep) لقاع سابق
+  // 1. فحص سحب السيولة (SSL Sweep) لقاع سابق
   if (sCurrent.type !== 'LOW' || sPrev.type !== 'HIGH' || sPrior.type !== 'LOW') {
     return null;
   }
@@ -177,7 +189,7 @@ export const analyzeICTBullishSetup = (candles: CandleData[], symbol: string, ti
   const didSweep = sCurrent.price < sPrior.price;
   if (!didSweep) return null;
 
-  // 2. التحقق من كسر الهيكل الصاعد (Bullish MSS) بإغلاق جسم الشمعة
+  // 2. كسر الهيكل الصاعد (Bullish MSS) بإغلاق جسم الشمعة
   let mssCandleIdx = -1;
   for (let cIdx = sCurrent.index + 1; cIdx < candles.length; cIdx++) {
     if (candles[cIdx].close > sPrev.price) {
@@ -188,10 +200,10 @@ export const analyzeICTBullishSetup = (candles: CandleData[], symbol: string, ti
 
   if (mssCandleIdx === -1) return null;
 
-  // التأكد من حداثة الكسر (حدث خلال آخر 15 شمعة)
+  // التأكد من حداثة كسر الهيكل (خلال آخر 15 شمعة)
   if (candles.length - 1 - mssCandleIdx > 15) return null;
 
-  // 3. حساب نطاق التوازن ومنطقة الخصم (Discount Zone < 50%)
+  // 3. التحقق من منطقة الخصم (Discount Zone < 50%)
   const impulseLow = sCurrent.price;
   const impulseHigh = candles[mssCandleIdx].high;
   const impulseRange = impulseHigh - impulseLow;
@@ -199,7 +211,7 @@ export const analyzeICTBullishSetup = (candles: CandleData[], symbol: string, ti
 
   const equilibrium = impulseLow + impulseRange * 0.5;
 
-  // 4. البحث عن FVG صاعد في منطقة الخصم
+  // 4. استخراج FVG صاعد داخل منطقة الخصم
   const fvgs = detectFVGs(candles, sCurrent.index, mssCandleIdx);
   const validDiscountFVG = fvgs.reverse().find((f) => f.type === 'BULLISH' && f.top <= equilibrium);
 
@@ -236,21 +248,21 @@ export const analyzeICTBullishSetup = (candles: CandleData[], symbol: string, ti
     fulfilledConditions: [
       {
         title: 'Sell-Side Liquidity Sweep',
-        description: `تم سحب سيولة القاع السابق عند $${sPrior.price.toFixed(4)} عبر كسر وهمي ثم الارتداد.`,
+        description: `تم سحب سيولة القاع السابق عند $${sPrior.price.toFixed(4)} بكسر كاذب متبوع برفض فوري.`,
       },
       {
         title: 'Market Structure Shift (MSS)',
-        description: `تأكيد كسر هيكل السوق الصاعد بإغلاق شمعة كاملة فوق القمة $${sPrev.price.toFixed(4)}.`,
+        description: `تأكيد كسر هيكل السوق الصاعد بإغلاق جسم شمعة كاملة فوق القمة $${sPrev.price.toFixed(4)}.`,
       },
       {
         title: 'Discount FVG Entry',
-        description: `تحديد الدخول عند فجوة FVG غير مغطاة داخل منطقة الخصم المؤسسية (أقل من 50% من الاندفاع).`,
+        description: `منطقة الدخول محددة عند فجوة FVG داخل منطقة الخصم (أقل من 50% من الاندفاع).`,
       },
     ],
     analysisReasons: {
-      entryReason: `دخول مؤسسي متوافق مع نموذج ICT على فريم [${timeframe}] بعد اكتمال السحب وكسر الهيكل.`,
+      entryReason: `فرصة شراء ICT نموذجية على فريم [${timeframe}] مكتملة الأركان المؤسسية.`,
       stopLossReason: `وقف الخسارة محمي أسفل قاع السحب المؤسسي $${stopLoss}.`,
-      takeProfitReason: `TP1 = 1:1.5 | TP2 = سيولة القمة السابقة $${tp2} | TP3 = امتداد 1:3.0.`,
+      takeProfitReason: `TP1 = 1:1.5 | TP2 = قمة السيولة السابقة $${tp2} | TP3 = امتداد 1:3.0.`,
     },
     status: 'ACTIVE' as const,
   };
@@ -261,12 +273,12 @@ export const analyzeICTBullishSetup = (candles: CandleData[], symbol: string, ti
 // ==========================================================
 export const runFullCryptoScan = async () => {
   const targetTimeframes = ['1h', '4h'];
-  console.log('🚀 [Crypto Scanner] بدء دورة الفحص الشامل للكريبتو (1h, 4h)...');
+  console.log('🚀 [Crypto Scanner] بدء دورة الفحص لأفضل 30 عملة رقمية (1h, 4h)...');
 
   let symbols: string[] = [];
   try {
     symbols = await getActiveUSDTSpotPairs();
-    console.log(`🔍 تم جلب ${symbols.length} زوج للتداول بنجاح.`);
+    console.log(`🔍 تم تثبيت ${symbols.length} زوج من نخبة العملات للفحص.`);
   } catch (error) {
     console.error('❌ فشل جلب قائمة الأزواج:', (error as Error).message);
     return;
@@ -301,11 +313,11 @@ export const runFullCryptoScan = async () => {
           }
         }
       } catch (error) {
-        // الاستمرار في الفحص
+        // الاستمرار للأصل التالي
       }
       await sleep(150);
     }
   }
 
-  console.log(`✨ [Crypto Scanner] انتهى الفحص: تم رصد وإرسال ${discoveredCount} فرصة بنجاح.`);
+  console.log(`✨ [Crypto Scanner] اكتمل الفحص: إجمالي المحاولات 60 | رُصدت ${discoveredCount} فرصة.`);
 };
