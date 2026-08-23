@@ -1,83 +1,48 @@
 import cron from 'node-cron';
 import { runFullCryptoScan } from './cryptoScanner';
 import { runForexScan } from './forexScanner';
-import { scanAllHarmonics } from './harmonicsScanner'; // الاسم المطابق للمصدر داخل ملفك
-
-// أعلام لمنع تداخل عمليات الفحص (Concurrency Locks)
-let isForexScanning = false;
-let isCryptoScanning = false;
-let isHarmonicScanning = false;
-
-// دالة تنفيذ فحص الفوركس والذهب
-const executeForexScan = async () => {
-  if (isForexScanning) {
-    console.warn('⚠️ فحص الفوركس السابق لا يزال قيد التنفيذ، تم تخطي هذه الدورة.');
-    return;
-  }
-  isForexScanning = true;
-  try {
-    console.log('🌍 بدء فحص أسواق الفوركس والذهب (ICT & Silver Bullet)...');
-    await runForexScan();
-  } catch (error: any) {
-    console.error('❌ خطأ أثناء تنفيذ فحص الفوركس:', error.message || error);
-  } finally {
-    isForexScanning = false;
-  }
-};
-
-// دالة تنفيذ فحص الكريبتو
-const executeCryptoScan = async () => {
-  if (isCryptoScanning) {
-    console.warn('⚠️ فحص الكريبتو السابق لا يزال قيد التنفيذ، تم تخطي هذه الدورة.');
-    return;
-  }
-  isCryptoScanning = true;
-  try {
-    console.log('🔄 بدء فحص سوق العملات الرقمية (Crypto ICT Scanner)...');
-    await runFullCryptoScan();
-  } catch (error: any) {
-    console.error('❌ خطأ أثناء تنفيذ فحص العملات الرقمية:', error.message || error);
-  } finally {
-    isCryptoScanning = false;
-  }
-};
-
-// دالة تنفيذ فحص نماذج الهارمونيك
-const executeHarmonicScan = async () => {
-  if (isHarmonicScanning) {
-    console.warn('⚠️ فحص الهارمونيك السابق لا يزال قيد التنفيذ، تم تخطي هذه الدورة.');
-    return;
-  }
-  isHarmonicScanning = true;
-  try {
-    await scanAllHarmonics();
-  } catch (error: any) {
-    console.error('❌ خطأ أثناء تنفيذ فحص الهارمونيك:', error.message || error);
-  } finally {
-    isHarmonicScanning = false;
-  }
-};
+import { scanAllHarmonics } from './harmonicsScanner';
+import { sendHarmonicSignalToTelegram } from './telegramHarmonics';
 
 export const initOpportunityScheduler = () => {
-  console.log('⏰ تم تهيئة مجدول الفرص الآلي (ICT Crypto, Forex & Harmonic Scanners)...');
+  console.log('⏰ تم تفعيل جدولة الماسحات الذكية...');
 
-  // 1. تشغيل فحص فوري عند إقلاع السيرفر
-  executeForexScan();
-  executeCryptoScan();
-  executeHarmonicScan();
+  // تشغيل فوري أولي وإرسال رسالة اختبار لقناة الهارمونيك
+  setTimeout(async () => {
+    console.log('🧪 جاري إرسال صفقة تجريبية لقناة الهارمونيك للتأكد من الربط...');
+    await sendHarmonicSignalToTelegram({
+      market: 'FOREX_METALS',
+      symbol: 'XAU/USD (Gold)',
+      pattern: 'Bullish Gartley 📐',
+      type: 'BUY',
+      timeframe: '1h',
+      entryPrice: 2635.50,
+      stopLoss: 2618.00,
+      tp1: 2648.20,
+      tp2: 2656.80,
+      tp3: 2670.00,
+      bRetracement: 0.618,
+      dRetracement: 0.786,
+      score: 98,
+    });
 
-  // 2. فحص الفوركس والمعادن كل 5 دقائق
-  cron.schedule('*/5 * * * *', async () => {
-    await executeForexScan();
-  });
+    await runFullCryptoScan();
+    await runForexScan();
+    await scanAllHarmonics();
+  }, 5000);
 
-  // 3. فحص العملات الرقمية كل 10 دقائق
+  // مسح الكريبتو ICT (كل 10 دقائق)
   cron.schedule('*/10 * * * *', async () => {
-    await executeCryptoScan();
+    await runFullCryptoScan();
   });
 
-  // 4. فحص نماذج الهارمونيك كل 15 دقيقة
-  cron.schedule('*/15 * * * *', async () => {
-    await executeHarmonicScan();
+  // مسح الفوركس والمعادن ICT (كل 5 دقائق)
+  cron.schedule('*/5 * * * *', async () => {
+    await runForexScan();
+  });
+
+  // مسح الهارمونيك الموحد VIP (كل 10 دقائق)
+  cron.schedule('*/10 * * * *', async () => {
+    await scanAllHarmonics();
   });
 };
