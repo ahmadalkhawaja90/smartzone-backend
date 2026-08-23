@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { runFullCryptoScan } from './cryptoScanner';
 import { runForexScan } from './forexScanner';
-import { scanAllHarmonics } from './harmonicScanner'; // الاسم المطابق للمصدر داخل ملفك
+import { scanAllHarmonics } from './harmonicsScanner'; // الاسم المطابق للمصدر داخل ملفك
 
 // أعلام لمنع تداخل عمليات الفحص (Concurrency Locks)
 let isForexScanning = false;
