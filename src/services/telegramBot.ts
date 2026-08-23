@@ -9,28 +9,6 @@ if (token) {
   bot = new TelegramBot(token);
 }
 
-// دالة فحص وتنسيق الشروط الخمسة لـ ICT بعلامات الصح والخطأ
-const formatAll5Conditions = (fulfilledConditions: any[] = []): string => {
-  const masterConditions = [
-    { key: 'sweep', label: '1. سحب السيولة (Liquidity Sweep)' },
-    { key: 'shift', label: '2. كسر هيكل السوق (MSS / BOS)' },
-    { key: 'fvg', label: '3. وجود فجوة سعرية متوازنة (FVG)' },
-    { key: 'ote', label: '4. الارتداد من منطقة الخصم / الدخول (OTE / Discount Zone)' },
-    { key: 'target', label: '5. استهداف مجمع سيولة واضح (Target Pool / External Liquidity)' },
-  ];
-
-  // الاعتماد المباشر على العدد الفعلي للشروط المحققة (نفس منطق الموقع 100%)
-  const totalConditionsCount = Array.isArray(fulfilledConditions) ? fulfilledConditions.length : 0;
-
-  return masterConditions
-    .map((cond, idx) => {
-      // التطابق المباشر: يطبع صح فقط على قدر عدد الشروط
-      const isMet = idx < totalConditionsCount;
-      return isMet ? `   ✅ ${cond.label}` : `   ❌ ${cond.label}`;
-    })
-    .join('\n');
-};
-
 // 1. توليد رابط دعوة لمرة واحدة للمشتركين
 export const generateOneTimeInviteLink = async (): Promise<string | null> => {
   if (!bot || !CHANNEL_ID) {
@@ -69,7 +47,6 @@ export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer):
   try {
     const symbol = opp.symbol || 'ASSET';
     const timeframe = opp.timeframe || '1h';
-    const rr = opp.riskRewardRatio || '1:2.8';
     const entryMin = opp.entryZone?.min ?? opp.currentPrice;
     const entryMax = opp.entryZone?.max ?? opp.currentPrice;
     const sl = opp.stopLoss ?? 0;
@@ -77,35 +54,24 @@ export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer):
     const tp2 = opp.targets?.tp2 ?? 0;
     const tp3 = opp.targets?.tp3 ?? 0;
 
-    // تجهيز قائمة الشروط الـ 5 كاملة مع علامات الصح والخطأ
-    const conditionsText = formatAll5Conditions(opp.fulfilledConditions);
-
     const message = `
-🧠 *SMARTZONE AI — تقرير رصد وتحليل هيكلي* 📊
-━━━━━━━━━━━━━━━━━━━━━
-🔍 *الأصل المرصود:* \`${symbol}\` (Spot)
-⏱ *الإطار الزمني:* \`${timeframe}\`
-🔥 *مؤشر التوافق الخوارزمي:* \`${score}%\`
-⚖️ *معدل العائد للمخاطرة:* \`${rr}\`
+🏛️ *SMARTZONE AI* ⚡
+═════════════════════════
+💎 *الأصل:* \`${symbol}\` (Spot)
+⏱️ *الفريم:* \`${timeframe}\`
+🚦 *نوع الصفقة:* 🟢 *شراء صاعد (BUY)*
+🏆 *قوة التوافق:* \`${score}%\` 🔥
+═════════════════════════
+🎯 *منطقة الدخول:* \`$${entryMin} - $${entryMax}\`
+🛑 *وقف الخسارة:* \`$${sl}\` ❌
 
-📌 *المستويات الهيكلية المرصودة:*
-• نطاق التوازن المقترح: \`$${entryMin} - $${entryMax}\`
-• نقطة إلغاء الفرضية التحليلية (Invalidation): \`$${sl}\`
-• مستويات السيولة المستهدفة:
-    ▫️ الهدف الأول: \`$${tp1}\`
-    ▫️ الهدف الثاني: \`$${tp2}\`
-    ▫️ الهدف الممتد: \`$${tp3}\`
-
-📋 *شروط ICT الخمسة المؤكدة:*
-${conditionsText}
-━━━━━━━━━━━━━━━━━━━━━
-> 💡 *السياق والمنطق الفني:*
-> تم رصد تمركز مؤسسي إثر سحب سيولة سابقة وتكوين كسر هيكلي بزخم (MSS)، مما يعيد موازنة السعر داخل نطاق الخصم لاستهداف السيولة الخارجية.
-
-> ⚖️ *إفصاح وإخلاء مسؤولية تنظيمي:*
-> هذا التقرير هو نتاج رصد خوارزمي آلي لمفاهيم التحليل المتقدم وهيكل السوق (ICT/SMC) لأغراض تعليمية وإحصائية فقط، ولا يمثل أي استشارة مالية أو دعوة لفتح مراكز تداول. أسواق الكريبتو عالية التقلب وإدارة المخاطر تقع على مسؤوليتك الشخصية.
-
-📱 *منصة SmartZone AI*
+🏁 *المستويات المستهدفة:*
+  🔹 *الهدف 1:* \`$${tp1}\` 🎯 _(1:1.5)_
+  🔹 *الهدف 2:* \`$${tp2}\` 🚀 _(سيولة BSL)_
+  ${tp3 ? `🔹 *الهدف 3:* \`$${tp3}\` 👑 _(امتداد 1:3.0)_` : ''}
+═════════════════════════
+💡 *القراءة الفنية:*
+✨ تم كسر قاع سابق وسحب السيولة المؤسسية (*SSL Sweep*)، أعقبه اندفاع سعري كسر هيكل السوق (*MSS*). الدخول مرتكز على فجوة سعرية صاعدة (*FVG*) داخل منطقة الخصم (*Discount Zone*).
 `;
 
     if (chartBuffer) {
