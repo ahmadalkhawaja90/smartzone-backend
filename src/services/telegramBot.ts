@@ -26,7 +26,7 @@ const formatAll5Conditions = (fulfilledConditions: any[] = []): string => {
     .map((cond, idx) => {
       // التطابق المباشر: يطبع صح فقط على قدر عدد الشروط
       const isMet = idx < totalConditionsCount;
-      return isMet ? `  ✅ ${cond.label}` : `  ❌ ${cond.label}`;
+      return isMet ? `   ✅ ${cond.label}` : `   ❌ ${cond.label}`;
     })
     .join('\n');
 };
@@ -51,8 +51,8 @@ export const generateOneTimeInviteLink = async (): Promise<string | null> => {
   }
 };
 
-// 2. إرسال تقرير الرصد الهيكلي فورياً إلى قناة التلغرام (فلتر 60% فما فوق)
-export const sendOpportunityToTelegram = async (opp: any): Promise<boolean> => {
+// 2. إرسال تقرير الرصد الهيكلي مع الشارت فورياً إلى قناة التلغرام (فلتر 60% فما فوق)
+export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer): Promise<boolean> => {
   if (!bot || !CHANNEL_ID) {
     console.error('⚠️ مفقود TELEGRAM_BOT_TOKEN أو TELEGRAM_CHANNEL_ID في .env');
     return false;
@@ -92,9 +92,9 @@ export const sendOpportunityToTelegram = async (opp: any): Promise<boolean> => {
 • نطاق التوازن المقترح: \`$${entryMin} - $${entryMax}\`
 • نقطة إلغاء الفرضية التحليلية (Invalidation): \`$${sl}\`
 • مستويات السيولة المستهدفة:
-   ▫️ الهدف الأول: \`$${tp1}\`
-   ▫️ الهدف الثاني: \`$${tp2}\`
-   ▫️ الهدف الممتد: \`$${tp3}\`
+    ▫️ الهدف الأول: \`$${tp1}\`
+    ▫️ الهدف الثاني: \`$${tp2}\`
+    ▫️ الهدف الممتد: \`$${tp3}\`
 
 📋 *شروط ICT الخمسة المؤكدة:*
 ${conditionsText}
@@ -108,7 +108,15 @@ ${conditionsText}
 📱 *منصة SmartZone AI*
 `;
 
-    await bot.sendMessage(CHANNEL_ID, message, { parse_mode: 'Markdown' });
+    if (chartBuffer) {
+      await bot.sendPhoto(CHANNEL_ID, chartBuffer, {
+        caption: message,
+        parse_mode: 'Markdown',
+      });
+    } else {
+      await bot.sendMessage(CHANNEL_ID, message, { parse_mode: 'Markdown' });
+    }
+
     console.log(`✅ تم نشر التقرير الفني للزوج ${symbol} (بسكور ${score}%) على قناة التلغرام بنجاح.`);
     return true;
   } catch (error) {
