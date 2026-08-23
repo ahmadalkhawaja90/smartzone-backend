@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { sendForexOpportunityToTelegram } from './telegramForex';
+import { generateChartPngBuffer, CandlePlotData } from './chartGenerator';
 
 const API_KEY = process.env.TWELVE_DATA_API_KEY || '7d5b98c57c0c4c05b856c93fdaebd37b';
 
@@ -179,24 +180,37 @@ const analyzeForexICTSetup = (candles: CandleData[], asset: typeof TARGET_ASSETS
     const tp3 = parseFloat((entryPrice + risk * 3.0).toFixed(asset.decimals));
 
     return {
-      symbol: asset.symbol,
-      type: 'BUY',
-      strategy: 'ICT Institutional Setup 🏛️',
-      timeframe,
-      currentPrice: parseFloat(currentPrice.toFixed(asset.decimals)),
-      entryZone: {
-        min: parseFloat(validFVG.bottom.toFixed(asset.decimals)),
-        max: parseFloat(validFVG.top.toFixed(asset.decimals)),
+      opportunity: {
+        symbol: asset.symbol,
+        type: 'BUY',
+        strategy: 'ICT Institutional Setup 🏛️',
+        timeframe,
+        currentPrice: parseFloat(currentPrice.toFixed(asset.decimals)),
+        entryZone: {
+          min: parseFloat(validFVG.bottom.toFixed(asset.decimals)),
+          max: parseFloat(validFVG.top.toFixed(asset.decimals)),
+        },
+        stopLoss,
+        targets: { tp1, tp2, tp3 },
+        riskRewardRatio: '1:2.5',
+        confluenceScore: 95,
+        fulfilledConditions: [
+          { title: 'Sell-Side Liquidity Sweep (SSL)' },
+          { title: 'Market Structure Shift (MSS Body Close)' },
+          { title: 'Discount Fair Value Gap (FVG)' },
+        ],
       },
-      stopLoss,
-      targets: { tp1, tp2, tp3 },
-      riskRewardRatio: '1:2.5',
-      confluenceScore: 95,
-      fulfilledConditions: [
-        { title: 'Sell-Side Liquidity Sweep (SSL)' },
-        { title: 'Market Structure Shift (MSS Body Close)' },
-        { title: 'Discount Fair Value Gap (FVG)' },
-      ],
+      chartOptions: {
+        symbol: asset.symbol,
+        timeframe,
+        entry: entryPrice,
+        stopLoss,
+        tp1,
+        tp2,
+        tp3,
+        fvgTop: validFVG.top,
+        fvgBottom: validFVG.bottom,
+      },
     };
   }
 
@@ -217,15 +231,17 @@ export const runForexScan = async () => {
 
         if (candles.length < 50) continue;
 
-        const setup = analyzeForexICTSetup(candles, asset, tf);
+        const result = analyzeForexICTSetup(candles, asset, tf);
 
-        if (setup && setup.confluenceScore >= 85) {
-          const cacheKey = `${asset.symbol}_${tf}_${setup.type}_${Math.floor(Date.now() / (3 * 60 * 60 * 1000))}`;
+        if (result && result.opportunity.confluenceScore >= 85) {
+          const cacheKey = `${asset.symbol}_${tf}_${result.opportunity.type}_${Math.floor(Date.now() / (3 * 60 * 60 * 1000))}`;
           if (!sentForexCache.has(cacheKey)) {
-            const sent = await sendForexOpportunityToTelegram(setup);
+            // توليد شارت حقيقي بالـ PNG
+            const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
+            const sent = await sendForexOpportunityToTelegram(result.opportunity, chartBuffer);
             if (sent) {
               sentForexCache.set(cacheKey, Date.now());
-              console.log(`🎯 [Forex Signal Sent]: ${asset.symbol} [${tf}] - Score: ${setup.confluenceScore}%`);
+              console.log(`🎯 [Forex Signal + Real Chart Sent]: ${asset.symbol} [${tf}] - Score: ${result.opportunity.confluenceScore}%`);
             }
           }
         }
