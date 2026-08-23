@@ -8,7 +8,7 @@ if (token) {
   bot = new TelegramBot(token);
 }
 
-export const sendForexOpportunityToTelegram = async (opp: any): Promise<boolean> => {
+export const sendForexOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer): Promise<boolean> => {
   if (!bot || !CHANNEL_ID) {
     console.error('⚠️ مفقود TELEGRAM_BOT_TOKEN أو FOREX_TELEGRAM_CHANNEL_ID في .env');
     return false;
@@ -38,9 +38,9 @@ export const sendForexOpportunityToTelegram = async (opp: any): Promise<boolean>
     // استخراج الشروط المؤكدة
     let conditionsText = '';
     if (Array.isArray(opp.fulfilledConditions)) {
-      conditionsText = opp.fulfilledConditions.map((c: any) => `  ✅ ${c.title || c}`).join('\n');
+      conditionsText = opp.fulfilledConditions.map((c: any) => `   ✅ ${c.title || c}`).join('\n');
     } else if (Array.isArray(opp.conditions)) {
-      conditionsText = opp.conditions.map((c: string) => `  ✅ ${c}`).join('\n');
+      conditionsText = opp.conditions.map((c: string) => `   ✅ ${c}`).join('\n');
     }
 
     const message = `
@@ -57,12 +57,12 @@ export const sendForexOpportunityToTelegram = async (opp: any): Promise<boolean>
 • نطاق التمركز والدخول: \`$${entryMin} - $${entryMax}\`
 • نقطة إلغاء الفرضية التحليلية (Invalidation): \`$${sl}\`
 • مستويات تدفق السيولة المستهدفة:
-   ▫️ الهدف الأول: \`$${tp1}\`
-   ▫️ الهدف الثاني: \`$${tp2}\`
-   ${tp3 ? `▫️ الهدف الممتد: \`$${tp3}\`` : ''}
+    ▫️ الهدف الأول: \`$${tp1}\`
+    ▫️ الهدف الثاني: \`$${tp2}\`
+    ${tp3 ? `▫️ الهدف الممتد: \`$${tp3}\`` : ''}
 
 📋 *المحددات الفنية المؤكدة:*
-${conditionsText || '  ✅ تأكيد سحب السيولة وكسر الهيكل في منطقة الخصم'}
+${conditionsText || '   ✅ تأكيد سحب السيولة وكسر الهيكل في منطقة الخصم'}
 ━━━━━━━━━━━━━━━━━━━━━
 > 💡 *السياق والمنطق الفني:*
 > تم رصد تداخل سيولة بنكية إثر سحب سيولة قاع سابق وتشكيل كسر هيكلي مع فجوة سعرية (FVG) داخل نطاق الخصم لاستهداف السيولة الخارجية.
@@ -73,7 +73,15 @@ ${conditionsText || '  ✅ تأكيد سحب السيولة وكسر الهيك�
 📱 *منصة SmartZone AI*
 `;
 
-    await bot.sendMessage(CHANNEL_ID, message, { parse_mode: 'Markdown' });
+    if (chartBuffer) {
+      await bot.sendPhoto(CHANNEL_ID, chartBuffer, {
+        caption: message,
+        parse_mode: 'Markdown',
+      });
+    } else {
+      await bot.sendMessage(CHANNEL_ID, message, { parse_mode: 'Markdown' });
+    }
+
     console.log(`✅ تم نشر التقرير الفني للزوج [${symbol} - ${timeframe}] بسكور ${score}% بنجاح.`);
     return true;
   } catch (error) {
