@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { Opportunity } from '../models/Opportunity';
 import { sendOpportunityToTelegram } from './telegramBot';
+import { generateChartPngBuffer, CandlePlotData } from './chartGenerator';
 
 export interface CandleData {
   openTime: number;
@@ -231,40 +232,53 @@ export const analyzeICTBullishSetup = (candles: CandleData[], symbol: string, ti
   const baseAsset = symbol.replace('USDT', '');
 
   return {
-    symbol,
-    baseAsset,
-    market: 'crypto' as const,
-    timeframe,
-    type: 'SPOT_BUY' as const,
-    currentPrice,
-    entryZone: {
-      min: parseFloat((validDiscountFVG.bottom).toFixed(6)),
-      max: parseFloat((validDiscountFVG.top).toFixed(6)),
+    opportunity: {
+      symbol,
+      baseAsset,
+      market: 'crypto' as const,
+      timeframe,
+      type: 'SPOT_BUY' as const,
+      currentPrice,
+      entryZone: {
+        min: parseFloat((validDiscountFVG.bottom).toFixed(6)),
+        max: parseFloat((validDiscountFVG.top).toFixed(6)),
+      },
+      stopLoss,
+      targets: { tp1, tp2, tp3 },
+      riskRewardRatio: '1:3.0',
+      confluenceScore: 95,
+      fulfilledConditions: [
+        {
+          title: 'Sell-Side Liquidity Sweep',
+          description: `تم سحب سيولة القاع السابق عند $${sPrior.price.toFixed(4)} بكسر كاذب متبوع برفض فوري.`,
+        },
+        {
+          title: 'Market Structure Shift (MSS)',
+          description: `تأكيد كسر هيكل السوق الصاعد بإغلاق جسم شمعة كاملة فوق القمة $${sPrev.price.toFixed(4)}.`,
+        },
+        {
+          title: 'Discount FVG Entry',
+          description: `منطقة الدخول محددة عند فجوة FVG داخل منطقة الخصم (أقل من 50% من الاندفاع).`,
+        },
+      ],
+      analysisReasons: {
+        entryReason: `فرصة شراء ICT نموذجية على فريم [${timeframe}] مكتملة الأركان المؤسسية.`,
+        stopLossReason: `وقف الخسارة محمي أسفل قاع السحب المؤسسي $${stopLoss}.`,
+        takeProfitReason: `TP1 = 1:1.5 | TP2 = قمة السيولة السابقة $${tp2} | TP3 = امتداد 1:3.0.`,
+      },
+      status: 'ACTIVE' as const,
     },
-    stopLoss,
-    targets: { tp1, tp2, tp3 },
-    riskRewardRatio: '1:3.0',
-    confluenceScore: 95,
-    fulfilledConditions: [
-      {
-        title: 'Sell-Side Liquidity Sweep',
-        description: `تم سحب سيولة القاع السابق عند $${sPrior.price.toFixed(4)} بكسر كاذب متبوع برفض فوري.`,
-      },
-      {
-        title: 'Market Structure Shift (MSS)',
-        description: `تأكيد كسر هيكل السوق الصاعد بإغلاق جسم شمعة كاملة فوق القمة $${sPrev.price.toFixed(4)}.`,
-      },
-      {
-        title: 'Discount FVG Entry',
-        description: `منطقة الدخول محددة عند فجوة FVG داخل منطقة الخصم (أقل من 50% من الاندفاع).`,
-      },
-    ],
-    analysisReasons: {
-      entryReason: `فرصة شراء ICT نموذجية على فريم [${timeframe}] مكتملة الأركان المؤسسية.`,
-      stopLossReason: `وقف الخسارة محمي أسفل قاع السحب المؤسسي $${stopLoss}.`,
-      takeProfitReason: `TP1 = 1:1.5 | TP2 = قمة السيولة السابقة $${tp2} | TP3 = امتداد 1:3.0.`,
+    chartOptions: {
+      symbol,
+      timeframe,
+      entry: entryPrice,
+      stopLoss,
+      tp1,
+      tp2,
+      tp3,
+      fvgTop: validDiscountFVG.top,
+      fvgBottom: validDiscountFVG.bottom,
     },
-    status: 'ACTIVE' as const,
   };
 };
 
@@ -292,9 +306,9 @@ export const runFullCryptoScan = async () => {
         const candles = await fetchCandles(symbol, tf, 100);
         if (candles.length < 50) continue;
 
-        const opportunity = analyzeICTBullishSetup(candles, symbol, tf);
+        const result = analyzeICTBullishSetup(candles, symbol, tf);
 
-        if (opportunity) {
+        if (result) {
           const existing = await Opportunity.findOne({
             symbol,
             timeframe: tf,
@@ -303,11 +317,14 @@ export const runFullCryptoScan = async () => {
           });
 
           if (!existing) {
-            const createdOpp = await Opportunity.create(opportunity);
+            const createdOpp = await Opportunity.create(result.opportunity);
             discoveredCount++;
-            console.log(`🎯 [فرصة ICT رُصدت]: ${symbol} [${tf}] - Score: ${opportunity.confluenceScore}%`);
+            console.log(`🎯 [فرصة ICT رُصدت]: ${symbol} [${tf}] - Score: ${result.opportunity.confluenceScore}%`);
 
-            sendOpportunityToTelegram(createdOpp).catch((err) => {
+            // توليد الشارت الحقيقي للعملة المرصودة
+            const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
+
+            sendOpportunityToTelegram(createdOpp, chartBuffer).catch((err) => {
               console.error(`⚠️ خطأ إرسال التلغرام لـ ${symbol}:`, err.message);
             });
           }
