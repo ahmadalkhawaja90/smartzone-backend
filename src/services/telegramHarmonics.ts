@@ -28,37 +28,34 @@ export const sendHarmonicSignalToTelegram = async (signal: HarmonicSignal): Prom
     return false;
   }
 
-  const directionBadge = signal.type === 'BUY' ? '🟢 شراء صاعد (BUY / LONG)' : '🔴 بيع هابط (SELL / SHORT)';
+  const orderType = signal.type === 'BUY' ? '🟢 أمر شراء معلق (BUY LIMIT)' : '🔴 أمر بيع معلق (SELL LIMIT)';
   const marketBadge =
     signal.market === 'CRYPTO'
       ? '🪙 العملات الرقمية (Crypto)'
       : signal.market === 'FOREX_METALS'
-      ? '🥇 المعادن والذهب (Metals & Gold)'
-      : '🏛️ المؤشرات الأمريكية (US Indices)';
+      ? '🥇 الفوركس والمعادن (Forex & Metals)'
+      : '🏛️ المؤشرات العالمية (Global Indices)';
 
   const message = `
-🎯 <b>تنبيه VIP: اكتمال نموذج هارمونيك هندسي</b>
+📐 <b>SMARTZONE HARMONIC AI — تنبيه استباقي</b> ⚡
 ═════════════════════════
 🌐 <b>السوق:</b> ${marketBadge}
 💎 <b>الأصل / الزوج:</b> <code>${signal.symbol}</code>
-📐 <b>النموذج:</b> <b>${signal.pattern}</b>
-⏱️ <b>الفريم الزمني:</b> ${signal.timeframe}
-🚦 <b>الاتجاه المتوقع:</b> ${directionBadge}
-🏆 <b>نسبة التوافق الرياضي:</b> <b>${signal.score}%</b>
+📐 <b>النموذج المتوقع:</b> <b>${signal.pattern}</b>
+⏱️ <b>الإطار الزمني:</b> <code>${signal.timeframe}</code>
+🚦 <b>نوع التمركز:</b> ${orderType}
+🏆 <b>نسبة التوافق الهندسي:</b> <code>${signal.score}%</code> 🔥
 ═════════════════════════
-🎯 <b>نقطة الدخول (نقطة الانعكاس D):</b> <code>${signal.entryPrice}</code>
-🛑 <b>وقف الخسارة المحمي (نقطة X):</b> <code>${signal.stopLoss}</code>
+🎯 <b>منطقة الانعكاس المتوقعة (Point D):</b> <code>${signal.entryPrice}</code>
+🛑 <b>وقف الخسارة المحكم (Invalidation):</b> <code>${signal.stopLoss}</code> ❌
 
-🏁 <b>الأهداف النموذجية (Fibonacci Levels):</b>
-  • <b>الهدف الأول (TP1 - 0.382):</b> <code>${signal.tp1}</code>
-  • <b>الهدف الثاني (TP2 - 0.618):</b> <code>${signal.tp2}</code>
-  • <b>الهدف الثالث (TP3 - 1.000):</b> <code>${signal.tp3}</code>
+🏁 <b>المستويات المستهدفة (Fibonacci Targets):</b>
+  🔹 <b>الهدف الأول (TP1 - 0.382):</b> <code>${signal.tp1}</code> 🎯
+  🔹 <b>الهدف الثاني (TP2 - 0.618):</b> <code>${signal.tp2}</code> 🚀
+  🔹 <b>الهدف الممتد (TP3 - 1.000):</b> <code>${signal.tp3}</code> 👑
 ═════════════════════════
-📐 <b>نسب فيبوناتشي المحققة:</b>
-  • ارتداد النقطة B: <code>${(signal.bRetracement * 100).toFixed(1)}%</code>
-  • منطقة الانعكاس D (PRZ): <code>${(signal.dRetracement * 100).toFixed(1)}%</code>
-═════════════════════════
-⚠️ <i>إدارة رأس المال: يُنصح بنقل وقف الخسارة لنقطة الدخول فور تحقيق الهدف الأول TP1.</i>
+💡 <b>القراءة الهندسية:</b>
+✨ اكتمل تشكل الأضلاع (XA, AB, BC) بنسب فيبوناتشي دقيقة. السعر يتجه حالياً نحو منطقة الانعكاس المحتملة (PRZ - النقطة D) لارتداد متوقع.
 `;
 
   try {
