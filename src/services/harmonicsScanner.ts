@@ -16,20 +16,30 @@ interface SwingPoint {
   type: 'HIGH' | 'LOW';
 }
 
-const CRYPTO_TARGETS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'NEARUSDT'];
+const CRYPTO_TARGETS = [
+  'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 
+  'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'NEARUSDT'
+];
 
 const TRADITIONAL_TARGETS = [
+  // المعادن
   { name: 'XAU/USD (Gold)', ticker: 'GC=F', decimals: 2, market: 'FOREX_METALS' as const },
   { name: 'XAG/USD (Silver)', ticker: 'SI=F', decimals: 3, market: 'FOREX_METALS' as const },
+  // الفوركس
+  { name: 'EUR/USD', ticker: 'EURUSD=X', decimals: 5, market: 'FOREX_METALS' as const },
+  { name: 'GBP/USD', ticker: 'GBPUSD=X', decimals: 5, market: 'FOREX_METALS' as const },
+  { name: 'USD/JPY', ticker: 'JPY=X', decimals: 3, market: 'FOREX_METALS' as const },
+  // المؤشرات
   { name: 'US100 (Nasdaq)', ticker: '^IXIC', decimals: 2, market: 'INDICES' as const },
-  { name: 'US500 (S&P 500)', ticker: '^GSPC', decimals: 2, market: 'INDICES' as const },
-  { name: 'US30 (Dow Jones)', ticker: '^DJI', decimals: 2, market: 'INDICES' as const },
+  { name: 'US30 (Dow)', ticker: '^DJI', decimals: 2, market: 'INDICES' as const },
 ];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const sentHarmonicsCache = new Map<string, number>();
 
-// 1. جلب شموع الكريبتو من Bybit
+// ==========================================
+// 1. دوال جلب الشموع (Crypto & Traditional)
+// ==========================================
 const fetchCryptoCandles = async (symbol: string, interval: string): Promise<CandleData[]> => {
   const bybitInterval = interval === '15m' ? '15' : interval === '1h' ? '60' : '240';
   try {
@@ -54,7 +64,6 @@ const fetchCryptoCandles = async (symbol: string, interval: string): Promise<Can
   }
 };
 
-// 2. جلب شموع المعادن والمؤشرات من Yahoo Finance
 const fetchYahooCandles = async (ticker: string, interval: string, decimals: number): Promise<CandleData[]> => {
   const yInterval = interval === '15m' ? '15m' : interval === '1h' ? '60m' : '1d';
   const range = interval === '15m' ? '5d' : '30d';
@@ -86,8 +95,10 @@ const fetchYahooCandles = async (ticker: string, interval: string, decimals: num
   }
 };
 
-// 3. تحديد القمم والقيعان الهندسية
-const findSwings = (candles: CandleData[], leftRight = 2): SwingPoint[] => {
+// ==========================================
+// 2. كشف القمم والقيعان
+// ==========================================
+const findSwings = (candles: CandleData[], leftRight = 3): SwingPoint[] => {
   const swings: SwingPoint[] = [];
   for (let i = leftRight; i < candles.length - leftRight; i++) {
     const left = candles.slice(i - leftRight, i);
@@ -102,141 +113,176 @@ const findSwings = (candles: CandleData[], leftRight = 2): SwingPoint[] => {
   return swings;
 };
 
-// 4. خوارزمية كشف النماذج (شراء وبيع Gartley & Bat)
-const detectHarmonics = (
+// ==========================================
+// 3. المحرك الاستباقي (Anticipatory Engine)
+// ==========================================
+const predictHarmonics = (
   candles: CandleData[],
   decimals: number
 ): Omit<HarmonicSignal, 'market' | 'symbol' | 'timeframe'> | null => {
-  const swings = findSwings(candles, 2);
-  if (swings.length < 5) return null;
+  const swings = findSwings(candles, 3);
+  if (swings.length < 4) return null; // نحتاج 4 نقاط فقط X, A, B, C
 
-  const [X, A, B, C, D] = swings.slice(-5);
+  // نأخذ آخر 4 نقاط هندسية
+  const [X, A, B, C] = swings.slice(-4);
+  const currentPrice = candles[candles.length - 1].close;
 
-  // التأكد من حداثة اكتمال النقطة D
-  if (D.index < candles.length - 4) return null;
+  // تجاهل النماذج إذا كانت النقطة C قديمة جداً
+  if (candles.length - 1 - C.index > 30) return null;
 
   // ==========================================
-  // أ) النماذج الشرائية الصاعدة (Bullish Setups)
+  // أ) توقع الشراء (Bullish Setup - Pending D)
   // ==========================================
-  if (X.type === 'LOW' && A.type === 'HIGH' && B.type === 'LOW' && C.type === 'HIGH' && D.type === 'LOW') {
+  if (X.type === 'LOW' && A.type === 'HIGH' && B.type === 'LOW' && C.type === 'HIGH') {
+    if (currentPrice > C.price) return null; // السعر كسر C صعوداً وفشل النموذج
+
     const XA = A.price - X.price;
-    if (XA <= 0) return null;
+    const AB = A.price - B.price;
+    const BC = C.price - B.price;
 
-    const bRetracement = (A.price - B.price) / XA;
-    const dRetracement = (A.price - D.price) / XA;
+    const bRetracement = AB / XA;
+    const cRetracement = BC / AB;
+
+    if (cRetracement < 0.382 || cRetracement > 0.95) return null;
 
     let pattern = '';
-    let score = 95;
+    let dRatio = 0;
+    let score = 90;
 
-    // Gartley (B ~ 0.618, D ~ 0.786)
-    if (Math.abs(bRetracement - 0.618) <= 0.08 && Math.abs(dRetracement - 0.786) <= 0.08) {
-      pattern = 'Bullish Gartley';
-      score = 98;
+    if (Math.abs(bRetracement - 0.618) <= 0.08) { pattern = 'Bullish Gartley'; dRatio = 0.786; score = 98; }
+    else if (bRetracement >= 0.35 && bRetracement <= 0.55) { pattern = 'Bullish Bat'; dRatio = 0.886; score = 96; }
+    else if (Math.abs(bRetracement - 0.786) <= 0.08) { pattern = 'Bullish Butterfly'; dRatio = 1.272; score = 94; }
+    else if (bRetracement >= 0.25 && bRetracement <= 0.65 && !pattern) { pattern = 'Bullish Crab'; dRatio = 1.618; score = 92; }
+
+    if (!pattern) return null;
+
+    // الحساب الاستباقي لمنطقة D
+    const projectedD = A.price - (XA * dRatio);
+
+    // التأكد أن السعر الحالي لم يضرب D وارتد بعيداً
+    if (currentPrice < projectedD * 0.998) return null; 
+
+    // حساب الوقف الديناميكي
+    let stopLoss = 0;
+    if (dRatio < 1) { // نماذج داخلية (جارتلي وبات) الوقف خلف X بـ 10% من طول XA
+      stopLoss = X.price - (XA * 0.1);
+    } else { // نماذج خارجية (فراشة وكابوريا)
+      const extRatio = dRatio === 1.272 ? 1.414 : 2.0;
+      stopLoss = A.price - (XA * extRatio);
     }
-    // Bat (B ~ 0.382-0.50, D ~ 0.886)
-    else if (bRetracement >= 0.35 && bRetracement <= 0.55 && Math.abs(dRetracement - 0.886) <= 0.08) {
-      pattern = 'Bullish Bat';
-      score = 96;
-    }
 
-    if (pattern) {
-      const entry = D.price;
-      const stopLoss = parseFloat((X.price * 0.996).toFixed(decimals));
-      if (stopLoss >= entry) return null;
+    const entryPrice = parseFloat(projectedD.toFixed(decimals));
+    stopLoss = parseFloat(stopLoss.toFixed(decimals));
+    
+    const risk = entryPrice - stopLoss;
+    if (risk <= 0) return null;
 
-      const CD = C.price - D.price;
-      const tp1 = parseFloat((entry + CD * 0.382).toFixed(decimals));
-      const tp2 = parseFloat((entry + CD * 0.618).toFixed(decimals));
-      const tp3 = parseFloat((entry + CD * 1.0).toFixed(decimals));
+    const CD = C.price - entryPrice;
+    const tp1 = parseFloat((entryPrice + CD * 0.382).toFixed(decimals));
+    const tp2 = parseFloat((entryPrice + CD * 0.618).toFixed(decimals));
+    const tp3 = parseFloat(C.price.toFixed(decimals)); // الهدف الأخير عند قمة C
 
-      if (entry < tp1 && tp1 < tp2 && tp2 < tp3) {
-        return {
-          pattern,
-          type: 'BUY',
-          entryPrice: entry,
-          stopLoss,
-          tp1,
-          tp2,
-          tp3,
-          bRetracement,
-          dRetracement,
-          score,
-        };
-      }
-    }
+    const rewardTP1 = tp1 - entryPrice;
+    if (rewardTP1 / risk < 1.3) return null; // فلتر العائد للمخاطرة الصارم
+
+    return {
+      pattern,
+      type: 'BUY',
+      entryPrice,
+      stopLoss,
+      tp1, tp2, tp3,
+      bRetracement: parseFloat(bRetracement.toFixed(3)),
+      dRetracement: dRatio,
+      score,
+    };
   }
 
   // ==========================================
-  // ب) النماذج البيعية الهابطة (Bearish Setups)
+  // ب) توقع البيع (Bearish Setup - Pending D)
   // ==========================================
-  if (X.type === 'HIGH' && A.type === 'LOW' && B.type === 'HIGH' && C.type === 'LOW' && D.type === 'HIGH') {
-    const XA = X.price - A.price;
-    if (XA <= 0) return null;
+  if (X.type === 'HIGH' && A.type === 'LOW' && B.type === 'HIGH' && C.type === 'LOW') {
+    if (currentPrice < C.price) return null;
 
-    const bRetracement = (B.price - A.price) / XA;
-    const dRetracement = (D.price - A.price) / XA;
+    const XA = X.price - A.price;
+    const AB = B.price - A.price;
+    const BC = B.price - C.price;
+
+    const bRetracement = AB / XA;
+    const cRetracement = BC / AB;
+
+    if (cRetracement < 0.382 || cRetracement > 0.95) return null;
 
     let pattern = '';
-    let score = 95;
+    let dRatio = 0;
+    let score = 90;
 
-    // Bearish Gartley
-    if (Math.abs(bRetracement - 0.618) <= 0.08 && Math.abs(dRetracement - 0.786) <= 0.08) {
-      pattern = 'Bearish Gartley';
-      score = 98;
+    if (Math.abs(bRetracement - 0.618) <= 0.08) { pattern = 'Bearish Gartley'; dRatio = 0.786; score = 98; }
+    else if (bRetracement >= 0.35 && bRetracement <= 0.55) { pattern = 'Bearish Bat'; dRatio = 0.886; score = 96; }
+    else if (Math.abs(bRetracement - 0.786) <= 0.08) { pattern = 'Bearish Butterfly'; dRatio = 1.272; score = 94; }
+    else if (bRetracement >= 0.25 && bRetracement <= 0.65 && !pattern) { pattern = 'Bearish Crab'; dRatio = 1.618; score = 92; }
+
+    if (!pattern) return null;
+
+    // الحساب الاستباقي لمنطقة D
+    const projectedD = A.price + (XA * dRatio);
+
+    if (currentPrice > projectedD * 1.002) return null;
+
+    let stopLoss = 0;
+    if (dRatio < 1) {
+      stopLoss = X.price + (XA * 0.1);
+    } else {
+      const extRatio = dRatio === 1.272 ? 1.414 : 2.0;
+      stopLoss = A.price + (XA * extRatio);
     }
-    // Bearish Bat
-    else if (bRetracement >= 0.35 && bRetracement <= 0.55 && Math.abs(dRetracement - 0.886) <= 0.08) {
-      pattern = 'Bearish Bat';
-      score = 96;
-    }
 
-    if (pattern) {
-      const entry = D.price;
-      const stopLoss = parseFloat((X.price * 1.004).toFixed(decimals));
-      if (stopLoss <= entry) return null;
+    const entryPrice = parseFloat(projectedD.toFixed(decimals));
+    stopLoss = parseFloat(stopLoss.toFixed(decimals));
+    
+    const risk = stopLoss - entryPrice;
+    if (risk <= 0) return null;
 
-      const CD = D.price - C.price;
-      const tp1 = parseFloat((entry - CD * 0.382).toFixed(decimals));
-      const tp2 = parseFloat((entry - CD * 0.618).toFixed(decimals));
-      const tp3 = parseFloat((entry - CD * 1.0).toFixed(decimals));
+    const CD = entryPrice - C.price;
+    const tp1 = parseFloat((entryPrice - CD * 0.382).toFixed(decimals));
+    const tp2 = parseFloat((entryPrice - CD * 0.618).toFixed(decimals));
+    const tp3 = parseFloat(C.price.toFixed(decimals));
 
-      if (entry > tp1 && tp1 > tp2 && tp2 > tp3) {
-        return {
-          pattern,
-          type: 'SELL',
-          entryPrice: entry,
-          stopLoss,
-          tp1,
-          tp2,
-          tp3,
-          bRetracement,
-          dRetracement,
-          score,
-        };
-      }
-    }
+    const rewardTP1 = entryPrice - tp1;
+    if (rewardTP1 / risk < 1.3) return null;
+
+    return {
+      pattern,
+      type: 'SELL',
+      entryPrice,
+      stopLoss,
+      tp1, tp2, tp3,
+      bRetracement: parseFloat(bRetracement.toFixed(3)),
+      dRetracement: dRatio,
+      score,
+    };
   }
 
   return null;
 };
 
-// 5. محرك الفحص الشامل
+// ==========================================
+// 4. محرك الفحص الشامل
+// ==========================================
 export const scanAllHarmonics = async () => {
-  console.log('📐 [Harmonics Scanner] بدء فحص نماذج الهارمونيك (Crypto / Metals / Indices)...');
+  console.log('📐 [Harmonics Scanner] بدء فحص النماذج الاستباقية (الكريبتو / الفوركس / المعادن / المؤشرات)...');
 
-  // فحص الكريبتو
+  // الكريبتو
   for (const symbol of CRYPTO_TARGETS) {
     for (const tf of ['15m', '1h', '4h']) {
       const candles = await fetchCryptoCandles(symbol, tf);
       if (candles.length < 35) continue;
 
-      const detected = detectHarmonics(candles, 4);
+      const detected = predictHarmonics(candles, 4);
       if (detected) {
         const cacheKey = `${symbol}_${detected.pattern}_${tf}_${detected.type}`;
         const lastSent = sentHarmonicsCache.get(cacheKey) || 0;
 
-        // منع تكرار نفس النموذج خلال 4 ساعات
-        if (Date.now() - lastSent > 4 * 60 * 60 * 1000) {
+        if (Date.now() - lastSent > 4 * 60 * 60 * 1000) { // منع تكرار نفس الفرصة خلال 4 ساعات
           const sent = await sendHarmonicSignalToTelegram({
             market: 'CRYPTO',
             symbol,
@@ -250,13 +296,13 @@ export const scanAllHarmonics = async () => {
     }
   }
 
-  // فحص المعادن والمؤشرات
+  // الأسواق التقليدية (فوركس ومؤشرات ومعادن)
   for (const asset of TRADITIONAL_TARGETS) {
     for (const tf of ['15m', '1h', '4h']) {
       const candles = await fetchYahooCandles(asset.ticker, tf, asset.decimals);
       if (candles.length < 35) continue;
 
-      const detected = detectHarmonics(candles, asset.decimals);
+      const detected = predictHarmonics(candles, asset.decimals);
       if (detected) {
         const cacheKey = `${asset.name}_${detected.pattern}_${tf}_${detected.type}`;
         const lastSent = sentHarmonicsCache.get(cacheKey) || 0;
