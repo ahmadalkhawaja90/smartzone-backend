@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { sendHarmonicSignalToTelegram, HarmonicSignal } from './telegramHarmonics';
+import { generateChartPngBuffer, CandlePlotData } from './chartGenerator';
 
 interface CandleData {
   openTime: number;
@@ -121,20 +122,16 @@ const predictHarmonics = (
   decimals: number
 ): Omit<HarmonicSignal, 'market' | 'symbol' | 'timeframe'> | null => {
   const swings = findSwings(candles, 3);
-  if (swings.length < 4) return null; // نحتاج 4 نقاط فقط X, A, B, C
+  if (swings.length < 4) return null;
 
-  // نأخذ آخر 4 نقاط هندسية
   const [X, A, B, C] = swings.slice(-4);
   const currentPrice = candles[candles.length - 1].close;
 
-  // تجاهل النماذج إذا كانت النقطة C قديمة جداً
   if (candles.length - 1 - C.index > 30) return null;
 
-  // ==========================================
   // أ) توقع الشراء (Bullish Setup - Pending D)
-  // ==========================================
   if (X.type === 'LOW' && A.type === 'HIGH' && B.type === 'LOW' && C.type === 'HIGH') {
-    if (currentPrice > C.price) return null; // السعر كسر C صعوداً وفشل النموذج
+    if (currentPrice > C.price) return null;
 
     const XA = A.price - X.price;
     const AB = A.price - B.price;
@@ -156,17 +153,13 @@ const predictHarmonics = (
 
     if (!pattern) return null;
 
-    // الحساب الاستباقي لمنطقة D
     const projectedD = A.price - (XA * dRatio);
+    if (currentPrice < projectedD * 0.998) return null;
 
-    // التأكد أن السعر الحالي لم يضرب D وارتد بعيداً
-    if (currentPrice < projectedD * 0.998) return null; 
-
-    // حساب الوقف الديناميكي
     let stopLoss = 0;
-    if (dRatio < 1) { // نماذج داخلية (جارتلي وبات) الوقف خلف X بـ 10% من طول XA
+    if (dRatio < 1) {
       stopLoss = X.price - (XA * 0.1);
-    } else { // نماذج خارجية (فراشة وكابوريا)
+    } else {
       const extRatio = dRatio === 1.272 ? 1.414 : 2.0;
       stopLoss = A.price - (XA * extRatio);
     }
@@ -180,10 +173,10 @@ const predictHarmonics = (
     const CD = C.price - entryPrice;
     const tp1 = parseFloat((entryPrice + CD * 0.382).toFixed(decimals));
     const tp2 = parseFloat((entryPrice + CD * 0.618).toFixed(decimals));
-    const tp3 = parseFloat(C.price.toFixed(decimals)); // الهدف الأخير عند قمة C
+    const tp3 = parseFloat(C.price.toFixed(decimals));
 
     const rewardTP1 = tp1 - entryPrice;
-    if (rewardTP1 / risk < 1.3) return null; // فلتر العائد للمخاطرة الصارم
+    if (rewardTP1 / risk < 1.3) return null;
 
     return {
       pattern,
@@ -197,9 +190,7 @@ const predictHarmonics = (
     };
   }
 
-  // ==========================================
   // ب) توقع البيع (Bearish Setup - Pending D)
-  // ==========================================
   if (X.type === 'HIGH' && A.type === 'LOW' && B.type === 'HIGH' && C.type === 'LOW') {
     if (currentPrice < C.price) return null;
 
@@ -223,9 +214,7 @@ const predictHarmonics = (
 
     if (!pattern) return null;
 
-    // الحساب الاستباقي لمنطقة D
     const projectedD = A.price + (XA * dRatio);
-
     if (currentPrice > projectedD * 1.002) return null;
 
     let stopLoss = 0;
@@ -269,7 +258,7 @@ const predictHarmonics = (
 // 4. محرك الفحص الشامل
 // ==========================================
 export const scanAllHarmonics = async () => {
-  console.log('📐 [Harmonics Scanner] بدء فحص النماذج الاستباقية (الكريبتو / الفوركس / المعادن / المؤشرات)...');
+  console.log('📐 [Harmonics Scanner] بدء فحص النماذج الاستباقية مع توليد الشارتات...');
 
   // الكريبتو
   for (const symbol of CRYPTO_TARGETS) {
@@ -282,13 +271,26 @@ export const scanAllHarmonics = async () => {
         const cacheKey = `${symbol}_${detected.pattern}_${tf}_${detected.type}`;
         const lastSent = sentHarmonicsCache.get(cacheKey) || 0;
 
-        if (Date.now() - lastSent > 4 * 60 * 60 * 1000) { // منع تكرار نفس الفرصة خلال 4 ساعات
-          const sent = await sendHarmonicSignalToTelegram({
-            market: 'CRYPTO',
+        if (Date.now() - lastSent > 4 * 60 * 60 * 1000) {
+          const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], {
             symbol,
             timeframe: tf,
-            ...detected,
+            entry: detected.entryPrice,
+            stopLoss: detected.stopLoss,
+            tp1: detected.tp1,
+            tp2: detected.tp2,
+            tp3: detected.tp3,
           });
+
+          const sent = await sendHarmonicSignalToTelegram(
+            {
+              market: 'CRYPTO',
+              symbol,
+              timeframe: tf,
+              ...detected,
+            },
+            chartBuffer
+          );
           if (sent) sentHarmonicsCache.set(cacheKey, Date.now());
         }
       }
@@ -308,12 +310,25 @@ export const scanAllHarmonics = async () => {
         const lastSent = sentHarmonicsCache.get(cacheKey) || 0;
 
         if (Date.now() - lastSent > 4 * 60 * 60 * 1000) {
-          const sent = await sendHarmonicSignalToTelegram({
-            market: asset.market,
+          const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], {
             symbol: asset.name,
             timeframe: tf,
-            ...detected,
+            entry: detected.entryPrice,
+            stopLoss: detected.stopLoss,
+            tp1: detected.tp1,
+            tp2: detected.tp2,
+            tp3: detected.tp3,
           });
+
+          const sent = await sendHarmonicSignalToTelegram(
+            {
+              market: asset.market,
+              symbol: asset.name,
+              timeframe: tf,
+              ...detected,
+            },
+            chartBuffer
+          );
           if (sent) sentHarmonicsCache.set(cacheKey, Date.now());
         }
       }
@@ -321,5 +336,5 @@ export const scanAllHarmonics = async () => {
     }
   }
 
-  console.log('📐 [Harmonics Scanner] اكتملت دورة الفحص.');
+  console.log('📐 [Harmonics Scanner] اكتملت دورة فحص الهارمونيك بنجاح.');
 };
