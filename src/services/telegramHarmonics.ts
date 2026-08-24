@@ -1,10 +1,15 @@
-import axios from 'axios';
+import TelegramBot from 'node-telegram-bot-api';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHANNEL_ID = process.env.TELEGRAM_HARMONICS_CHANNEL_ID;
+
+let bot: TelegramBot | null = null;
+if (BOT_TOKEN) {
+  bot = new TelegramBot(BOT_TOKEN);
+}
 
 export interface HarmonicSignal {
   market: 'CRYPTO' | 'FOREX_METALS' | 'INDICES';
@@ -22,8 +27,11 @@ export interface HarmonicSignal {
   score: number;
 }
 
-export const sendHarmonicSignalToTelegram = async (signal: HarmonicSignal): Promise<boolean> => {
-  if (!BOT_TOKEN || !CHANNEL_ID) {
+export const sendHarmonicSignalToTelegram = async (
+  signal: HarmonicSignal,
+  chartBuffer?: Buffer
+): Promise<boolean> => {
+  if (!bot || !CHANNEL_ID) {
     console.warn('⚠️ إعدادات قناة الهارمونيك غير مكتملة في .env (TELEGRAM_HARMONICS_CHANNEL_ID مفقود)');
     return false;
   }
@@ -37,35 +45,38 @@ export const sendHarmonicSignalToTelegram = async (signal: HarmonicSignal): Prom
       : '🏛️ المؤشرات العالمية (Global Indices)';
 
   const message = `
-📐 <b>SMARTZONE HARMONIC AI — تنبيه استباقي</b> ⚡
+📐 *SMARTZONE HARMONIC AI — تنبيه استباقي* ⚡
 ═════════════════════════
-🌐 <b>السوق:</b> ${marketBadge}
-💎 <b>الأصل / الزوج:</b> <code>${signal.symbol}</code>
-📐 <b>النموذج المتوقع:</b> <b>${signal.pattern}</b>
-⏱️ <b>الإطار الزمني:</b> <code>${signal.timeframe}</code>
-🚦 <b>نوع التمركز:</b> ${orderType}
-🏆 <b>نسبة التوافق الهندسي:</b> <code>${signal.score}%</code> 🔥
+🌐 *السوق:* ${marketBadge}
+💎 *الأصل / الزوج:* \`${signal.symbol}\`
+📐 *النموذج المتوقع:* *${signal.pattern}*
+⏱️ *الإطار الزمني:* \`${signal.timeframe}\`
+🚦 *نوع التمركز:* ${orderType}
+🏆 *نسبة التوافق الهندسي:* \`${signal.score}%\` 🔥
 ═════════════════════════
-🎯 <b>منطقة الانعكاس المتوقعة (Point D):</b> <code>${signal.entryPrice}</code>
-🛑 <b>وقف الخسارة المحكم (Invalidation):</b> <code>${signal.stopLoss}</code> ❌
+🎯 *منطقة الانعكاس المتوقعة (Point D):* \`${signal.entryPrice}\`
+🛑 *وقف الخسارة المحكم (Invalidation):* \`${signal.stopLoss}\` ❌
 
-🏁 <b>المستويات المستهدفة (Fibonacci Targets):</b>
-  🔹 <b>الهدف الأول (TP1 - 0.382):</b> <code>${signal.tp1}</code> 🎯
-  🔹 <b>الهدف الثاني (TP2 - 0.618):</b> <code>${signal.tp2}</code> 🚀
-  🔹 <b>الهدف الممتد (TP3 - 1.000):</b> <code>${signal.tp3}</code> 👑
+🏁 *المستويات المستهدفة (Fibonacci Targets):*
+  🔹 *الهدف الأول (TP1 - 0.382):* \`${signal.tp1}\` 🎯
+  🔹 *الهدف الثاني (TP2 - 0.618):* \`${signal.tp2}\` 🚀
+  🔹 *الهدف الممتد (TP3 - 1.000):* \`${signal.tp3}\` 👑
 ═════════════════════════
-💡 <b>القراءة الهندسية:</b>
+💡 *القراءة الهندسية:*
 ✨ اكتمل تشكل الأضلاع (XA, AB, BC) بنسب فيبوناتشي دقيقة. السعر يتجه حالياً نحو منطقة الانعكاس المحتملة (PRZ - النقطة D) لارتداد متوقع.
 `;
 
   try {
-    const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-    await axios.post(url, {
-      chat_id: CHANNEL_ID,
-      text: message,
-      parse_mode: 'HTML',
-    });
-    console.log(`✅ [Harmonic Sent]: ${signal.symbol} - ${signal.pattern} (${signal.type})`);
+    if (chartBuffer) {
+      await bot.sendPhoto(CHANNEL_ID, chartBuffer, {
+        caption: message,
+        parse_mode: 'Markdown',
+      });
+    } else {
+      await bot.sendMessage(CHANNEL_ID, message, { parse_mode: 'Markdown' });
+    }
+
+    console.log(`✅ [Harmonic + Chart Sent]: ${signal.symbol} - ${signal.pattern} (${signal.type})`);
     return true;
   } catch (error: any) {
     console.error('❌ خطأ إرسال إشعار الهارمونيك:', error.message);
