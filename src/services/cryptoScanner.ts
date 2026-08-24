@@ -122,7 +122,7 @@ const fetchCandles = async (symbol: string, interval = '1h', limit = 100): Promi
 };
 
 // ==========================================================
-// 3. أدوات التحليل المؤسسي (Swings & FVG)
+// 3. أدوات التحليل المؤسسي
 // ==========================================================
 interface SwingPoint {
   index: number;
@@ -165,178 +165,209 @@ const detectFVGs = (candles: CandleData[], startIdx: number, endIdx: number): FV
 };
 
 // ==========================================================
-// 4. خوارزمية تحليل ICT المؤسسية (شراء + بيع)
+// 4. خوارزمية تحليل ICT الذكية (بحث مرن)
 // ==========================================================
 export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe: string) => {
-  if (candles.length < 40) return null;
+  if (candles.length < 50) return null;
 
   const swings = findSwings(candles, 2);
-  if (swings.length < 4) return null;
+  if (swings.length < 5) return null;
 
-  const sCurrent = swings[swings.length - 1];
-  const sPrev = swings[swings.length - 2];
-  const sPrior = swings[swings.length - 3];
   const currentPrice = candles[candles.length - 1].close;
   const baseAsset = symbol.replace('USDT', '');
+  
+  // نأخذ آخر 15 قمة وقاع للبحث المرن
+  const recentSwings = swings.slice(-15);
 
-  // ==========================================
-  // أ) نموذج الشراء الصاعد (Bullish ICT Setup)
-  // ==========================================
-  if (sCurrent.type === 'LOW' && sPrev.type === 'HIGH' && sPrior.type === 'LOW') {
-    if (sCurrent.price < sPrior.price) { // SSL Sweep
-      let mssCandleIdx = -1;
-      for (let cIdx = sCurrent.index + 1; cIdx < candles.length; cIdx++) {
-        if (candles[cIdx].close > sPrev.price) {
-          mssCandleIdx = cIdx;
-          break;
+  // نبحث من الأحدث للأقدم لالتقاط الفرص الحالية
+  for (let i = recentSwings.length - 1; i >= 2; i--) {
+    const sweepNode = recentSwings[i];
+
+    // ==========================================
+    // أ) نموذج الشراء الصاعد (Bullish ICT)
+    // ==========================================
+    if (sweepNode.type === 'LOW') {
+      let prevLow = null;
+      let mssHigh = null;
+
+      // 1. إيجاد القاع المستهدف والقمة بينهما
+      for (let j = i - 1; j >= 0; j--) {
+        if (recentSwings[j].type === 'LOW' && sweepNode.price < recentSwings[j].price) {
+          prevLow = recentSwings[j];
+          let maxPrice = -Infinity;
+          for (let k = j; k <= i; k++) {
+            if (recentSwings[k].type === 'HIGH' && recentSwings[k].price > maxPrice) {
+              maxPrice = recentSwings[k].price;
+              mssHigh = recentSwings[k];
+            }
+          }
+          break; 
         }
       }
 
-      if (mssCandleIdx !== -1 && candles.length - 1 - mssCandleIdx <= 25) {
-        const impulseLow = sCurrent.price;
-        const impulseHigh = candles[mssCandleIdx].high;
-        const equilibrium = impulseLow + (impulseHigh - impulseLow) * 0.5;
+      if (prevLow && mssHigh) {
+        let mssIdx = -1;
+        let highestAfterMSS = sweepNode.price;
 
-        const fvgs = detectFVGs(candles, sCurrent.index, mssCandleIdx);
-        const validFVG = fvgs.reverse().find((f) => f.type === 'BULLISH' && f.top <= equilibrium);
+        // 2. التحقق من كسر الهيكل (MSS)
+        for (let c = sweepNode.index + 1; c < candles.length - 1; c++) {
+          if (candles[c].high > highestAfterMSS) highestAfterMSS = candles[c].high;
+          if (mssIdx === -1 && candles[c].close > mssHigh.price) {
+            mssIdx = c;
+          }
+        }
 
-        if (validFVG) {
-          const entryPrice = validFVG.top;
-          const stopLoss = parseFloat((impulseLow * 0.997).toFixed(6));
-          const risk = entryPrice - stopLoss;
+        // 3. التحقق من التوقيت والـ FVG
+        if (mssIdx !== -1 && (candles.length - mssIdx <= 30)) {
+          const impulseLow = sweepNode.price;
+          const equilibrium = impulseLow + (highestAfterMSS - impulseLow) * 0.5;
 
-          if (risk > 0) {
-            const tp1 = parseFloat((entryPrice + risk * 1.5).toFixed(6));
-            const tp2 = parseFloat(sPrev.price.toFixed(6));
-            const tp3 = parseFloat((entryPrice + risk * 3.0).toFixed(6));
+          const fvgs = detectFVGs(candles, sweepNode.index, mssIdx);
+          const validFVG = fvgs.reverse().find(f => {
+            if (f.type !== 'BULLISH' || f.top > equilibrium) return false;
+            
+            // التأكد أن الفجوة لم تُغلق بعد تشكلها
+            let closed = false;
+            for(let m = f.startIndex + 2; m < candles.length - 1; m++) {
+              if (candles[m].low < f.bottom) closed = true;
+            }
+            return !closed;
+          });
 
-            return {
-              opportunity: {
-                symbol,
-                baseAsset,
-                market: 'crypto' as const,
-                timeframe,
-                type: 'SPOT_BUY' as const,
-                currentPrice,
-                entryZone: {
-                  min: parseFloat(validFVG.bottom.toFixed(6)),
-                  max: parseFloat(validFVG.top.toFixed(6)),
-                },
-                stopLoss,
-                targets: { tp1, tp2, tp3 },
-                riskRewardRatio: '1:3.0',
-                confluenceScore: 95,
-                fulfilledConditions: [
-                  { title: 'Sell-Side Liquidity Sweep', description: `تم سحب سيولة القاع السابق عند $${sPrior.price}.` },
-                  { title: 'Bullish MSS', description: `كسر هيكل السوق الصاعد فوق القمة $${sPrev.price}.` },
-                  { title: 'Discount FVG', description: `منطقة دخول داخل نطاق الخصم.` },
-                ],
-                analysisReasons: {
-                  entryReason: `فرصة شراء ICT نموذجية على فريم [${timeframe}].`,
-                  stopLossReason: `وقف الخسارة محمي أسفل قاع السحب $${stopLoss}.`,
-                  takeProfitReason: `TP1: $${tp1} | TP2: $${tp2} | TP3: $${tp3}`,
-                },
-                status: 'ACTIVE' as const,
-              },
-              chartOptions: {
-                symbol,
-                timeframe,
-                entry: entryPrice,
-                stopLoss,
-                tp1, tp2, tp3,
-                fvgTop: validFVG.top,
-                fvgBottom: validFVG.bottom,
-              },
-            };
+          if (validFVG) {
+            // 4. زناد الدخول: السعر عاد لمنطقة الخصم واقترب من الـ FVG
+            if (currentPrice <= equilibrium && currentPrice > validFVG.bottom * 0.998) {
+              const entryPrice = validFVG.top;
+              const stopLoss = parseFloat((impulseLow * 0.997).toFixed(6));
+              const risk = entryPrice - stopLoss;
+              
+              if (risk > 0) {
+                const tp1 = parseFloat((entryPrice + risk * 1.5).toFixed(6));
+                const tp2 = parseFloat(mssHigh.price.toFixed(6));
+                const tp3 = parseFloat((entryPrice + risk * 3.0).toFixed(6));
+
+                return {
+                  opportunity: {
+                    symbol, baseAsset, market: 'crypto' as const, timeframe,
+                    type: 'SPOT_BUY' as const, currentPrice,
+                    entryZone: { min: parseFloat(validFVG.bottom.toFixed(6)), max: parseFloat(validFVG.top.toFixed(6)) },
+                    stopLoss, targets: { tp1, tp2, tp3 },
+                    riskRewardRatio: '1:3.0', confluenceScore: 98,
+                    fulfilledConditions: [
+                      { title: 'Liquidity Sweep', description: `سحب سيولة القاع $${prevLow.price}` },
+                      { title: 'True MSS', description: `كسر حقيقي للهيكل فوق $${mssHigh.price}` },
+                      { title: 'Fresh Discount FVG', description: `عودة السعر لاختبار فجوة غير مستهلكة` },
+                    ],
+                    analysisReasons: {
+                      entryReason: `شراء من FVG مثالية.`,
+                      stopLossReason: `وقف أسفل قاع السحب $${stopLoss}.`,
+                      takeProfitReason: `TP1: $${tp1} | TP2: $${tp2}`
+                    },
+                    status: 'ACTIVE' as const,
+                  },
+                  chartOptions: { symbol, timeframe, entry: entryPrice, stopLoss, tp1, tp2, tp3, fvgTop: validFVG.top, fvgBottom: validFVG.bottom },
+                };
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // ==========================================
+    // ب) نموذج البيع الهابط (Bearish ICT)
+    // ==========================================
+    if (sweepNode.type === 'HIGH') {
+      let prevHigh = null;
+      let mssLow = null;
+
+      for (let j = i - 1; j >= 0; j--) {
+        if (recentSwings[j].type === 'HIGH' && sweepNode.price > recentSwings[j].price) {
+          prevHigh = recentSwings[j];
+          let minPrice = Infinity;
+          for (let k = j; k <= i; k++) {
+            if (recentSwings[k].type === 'LOW' && recentSwings[k].price < minPrice) {
+              minPrice = recentSwings[k].price;
+              mssLow = recentSwings[k];
+            }
+          }
+          break; 
+        }
+      }
+
+      if (prevHigh && mssLow) {
+        let mssIdx = -1;
+        let lowestAfterMSS = sweepNode.price;
+
+        for (let c = sweepNode.index + 1; c < candles.length - 1; c++) {
+          if (candles[c].low < lowestAfterMSS) lowestAfterMSS = candles[c].low;
+          if (mssIdx === -1 && candles[c].close < mssLow.price) {
+            mssIdx = c;
+          }
+        }
+
+        if (mssIdx !== -1 && (candles.length - mssIdx <= 30)) {
+          const impulseHigh = sweepNode.price;
+          const equilibrium = impulseHigh - (impulseHigh - lowestAfterMSS) * 0.5;
+
+          const fvgs = detectFVGs(candles, sweepNode.index, mssIdx);
+          const validFVG = fvgs.reverse().find(f => {
+            if (f.type !== 'BEARISH' || f.bottom < equilibrium) return false;
+            
+            let closed = false;
+            for(let m = f.startIndex + 2; m < candles.length - 1; m++) {
+              if (candles[m].high > f.top) closed = true;
+            }
+            return !closed;
+          });
+
+          if (validFVG) {
+            if (currentPrice >= equilibrium && currentPrice < validFVG.top * 1.002) {
+              const entryPrice = validFVG.bottom;
+              const stopLoss = parseFloat((impulseHigh * 1.003).toFixed(6));
+              const risk = stopLoss - entryPrice;
+              
+              if (risk > 0) {
+                const tp1 = parseFloat((entryPrice - risk * 1.5).toFixed(6));
+                const tp2 = parseFloat(mssLow.price.toFixed(6));
+                const tp3 = parseFloat((entryPrice - risk * 3.0).toFixed(6));
+
+                return {
+                  opportunity: {
+                    symbol, baseAsset, market: 'crypto' as const, timeframe,
+                    type: 'SELL' as const, currentPrice,
+                    entryZone: { min: parseFloat(validFVG.bottom.toFixed(6)), max: parseFloat(validFVG.top.toFixed(6)) },
+                    stopLoss, targets: { tp1, tp2, tp3 },
+                    riskRewardRatio: '1:3.0', confluenceScore: 98,
+                    fulfilledConditions: [
+                      { title: 'Liquidity Sweep', description: `سحب سيولة القمة $${prevHigh.price}` },
+                      { title: 'True MSS', description: `كسر حقيقي للهيكل أسفل $${mssLow.price}` },
+                      { title: 'Fresh Premium FVG', description: `عودة السعر لاختبار فجوة بيعية` },
+                    ],
+                    analysisReasons: {
+                      entryReason: `بيع من FVG مثالية.`,
+                      stopLossReason: `وقف أعلى قمة السحب $${stopLoss}.`,
+                      takeProfitReason: `TP1: $${tp1} | TP2: $${tp2}`
+                    },
+                    status: 'ACTIVE' as const,
+                  },
+                  chartOptions: { symbol, timeframe, entry: entryPrice, stopLoss, tp1, tp2, tp3, fvgTop: validFVG.top, fvgBottom: validFVG.bottom },
+                };
+              }
+            }
           }
         }
       }
     }
   }
-
-  // ==========================================
-  // ب) نموذج البيع الهابط (Bearish ICT Setup)
-  // ==========================================
-  if (sCurrent.type === 'HIGH' && sPrev.type === 'LOW' && sPrior.type === 'HIGH') {
-    if (sCurrent.price > sPrior.price) { // BSL Sweep
-      let mssCandleIdx = -1;
-      for (let cIdx = sCurrent.index + 1; cIdx < candles.length; cIdx++) {
-        if (candles[cIdx].close < sPrev.price) {
-          mssCandleIdx = cIdx;
-          break;
-        }
-      }
-
-      if (mssCandleIdx !== -1 && candles.length - 1 - mssCandleIdx <= 25) {
-        const impulseHigh = sCurrent.price;
-        const impulseLow = candles[mssCandleIdx].low;
-        const equilibrium = impulseLow + (impulseHigh - impulseLow) * 0.5;
-
-        const fvgs = detectFVGs(candles, sCurrent.index, mssCandleIdx);
-        const validFVG = fvgs.reverse().find((f) => f.type === 'BEARISH' && f.bottom >= equilibrium);
-
-        if (validFVG) {
-          const entryPrice = validFVG.bottom;
-          const stopLoss = parseFloat((impulseHigh * 1.003).toFixed(6));
-          const risk = stopLoss - entryPrice;
-
-          if (risk > 0) {
-            const tp1 = parseFloat((entryPrice - risk * 1.5).toFixed(6));
-            const tp2 = parseFloat(sPrev.price.toFixed(6));
-            const tp3 = parseFloat((entryPrice - risk * 3.0).toFixed(6));
-
-            return {
-              opportunity: {
-                symbol,
-                baseAsset,
-                market: 'crypto' as const,
-                timeframe,
-                type: 'SELL' as const,
-                currentPrice,
-                entryZone: {
-                  min: parseFloat(validFVG.bottom.toFixed(6)),
-                  max: parseFloat(validFVG.top.toFixed(6)),
-                },
-                stopLoss,
-                targets: { tp1, tp2, tp3 },
-                riskRewardRatio: '1:3.0',
-                confluenceScore: 95,
-                fulfilledConditions: [
-                  { title: 'Buy-Side Liquidity Sweep', description: `تم سحب سيولة القمة السابقة عند $${sPrior.price}.` },
-                  { title: 'Bearish MSS', description: `كسر هيكل السوق الهابط أسفل القاع $${sPrev.price}.` },
-                  { title: 'Premium FVG', description: `منطقة دخول داخل نطاق العلاوة.` },
-                ],
-                analysisReasons: {
-                  entryReason: `فرصة بيع ICT نموذجية على فريم [${timeframe}].`,
-                  stopLossReason: `وقف الخسارة محمي أعلى قمة السحب $${stopLoss}.`,
-                  takeProfitReason: `TP1: $${tp1} | TP2: $${tp2} | TP3: $${tp3}`,
-                },
-                status: 'ACTIVE' as const,
-              },
-              chartOptions: {
-                symbol,
-                timeframe,
-                entry: entryPrice,
-                stopLoss,
-                tp1, tp2, tp3,
-                fvgTop: validFVG.top,
-                fvgBottom: validFVG.bottom,
-              },
-            };
-          }
-        }
-      }
-    }
-  }
-
   return null;
 };
 
 // ==========================================
-// 5. تشغيل المسح الدوري الشامل (1h, 4h لأفضل 60 عملة)
+// 5. تشغيل المسح الدوري الشامل
 // ==========================================
 export const runFullCryptoScan = async () => {
-  const targetTimeframes = ['15m', '1h', '4h'];
+  const targetTimeframes = ['1h', '4h'];
   console.log('🚀 [Crypto Scanner] بدء دورة الفحص لأفضل 60 عملة رقمية (1h, 4h)...');
 
   let symbols: string[] = [];
@@ -368,7 +399,7 @@ export const runFullCryptoScan = async () => {
           if (!existing) {
             const createdOpp = await Opportunity.create(result.opportunity);
             discoveredCount++;
-            console.log(`🎯 [فرصة ICT رُصدت]: ${symbol} [${tf}] - ${result.opportunity.type} - Score: ${result.opportunity.confluenceScore}%`);
+            console.log(`🎯 [فرصة ICT رُصدت]: ${symbol} [${tf}] - ${result.opportunity.type}`);
 
             const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
 
