@@ -13,7 +13,7 @@ export interface CandleData {
 }
 
 // ==========================================================
-// 1. جلب قائمة أفضل 30 زوج USDT نشط
+// 1. جلب قائمة أفضل 60 زوج USDT نشط
 // ==========================================================
 const CORE_TOP_PAIRS = [
   'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 
@@ -21,7 +21,11 @@ const CORE_TOP_PAIRS = [
   'SUIUSDT', 'DOGEUSDT', 'TONUSDT', 'APTUSDT', 'MATICUSDT',
   'LTCUSDT', 'BCHUSDT', 'ICPUSDT', 'FETUSDT', 'RENDERUSDT',
   'INJUSDT', 'TAOUSDT', 'RNDRUSDT', 'PEPEUSDT', 'SHIBUSDT',
-  'OPUSDT', 'ARBUSDT', 'ATOMUSDT', 'FILUSDT', 'FTMUSDT'
+  'OPUSDT', 'ARBUSDT', 'ATOMUSDT', 'FILUSDT', 'FTMUSDT',
+  'WIFUSDT', 'KASUSDT', 'STXUSDT', 'IMXUSDT', 'HBARUSDT',
+  'GRTUSDT', 'AAVEUSDT', 'MKRUSDT', 'SEIUSDT', 'FLOKIUSDT',
+  'BONKUSDT', 'RUNEUSDT', 'BEAMUSDT', 'JUPUSDT', 'STRKUSDT',
+  'PENDLEUSDT', 'TIAUSDT', 'ENSUSDT', 'GALAUSDT', 'CRVUSDT'
 ];
 
 export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
@@ -36,10 +40,10 @@ export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
     const dynamicTop = res.data.result.list
       .filter((item: any) => item.symbol.endsWith('USDT') && !blacklist.includes(item.symbol))
       .sort((a: any, b: any) => parseFloat(b.turnover24h) - parseFloat(a.turnover24h))
-      .slice(0, 30)
+      .slice(0, 60)
       .map((item: any) => item.symbol);
 
-    return Array.from(new Set([...CORE_TOP_PAIRS.slice(0, 8), ...dynamicTop])).slice(0, 30);
+    return Array.from(new Set([...CORE_TOP_PAIRS, ...dynamicTop])).slice(0, 60);
   } catch (error) {
     return CORE_TOP_PAIRS;
   }
@@ -329,11 +333,11 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
 };
 
 // ==========================================
-// 5. تشغيل المسح الدوري الشامل (1h, 4h)
+// 5. تشغيل المسح الدوري الشامل (1h, 4h لأفضل 60 عملة)
 // ==========================================
 export const runFullCryptoScan = async () => {
-  const targetTimeframes = ['1h', '4h'];
-  console.log('🚀 [Crypto Scanner] بدء دورة الفحص لأفضل 30 عملة رقمية (1h, 4h)...');
+  const targetTimeframes = ['15m', '1h', '4h'];
+  console.log('🚀 [Crypto Scanner] بدء دورة الفحص لأفضل 60 عملة رقمية (1h, 4h)...');
 
   let symbols: string[] = [];
   try {
@@ -380,5 +384,5 @@ export const runFullCryptoScan = async () => {
     }
   }
 
-  console.log(`✨ [Crypto Scanner] اكتمل الفحص: إجمالي المحاولات 60 | رُصدت ${discoveredCount} فرصة.`);
+  console.log(`✨ [Crypto Scanner] اكتمل الفحص: إجمالي المحاولات ${symbols.length * 2} | رُصدت ${discoveredCount} فرصة.`);
 };
