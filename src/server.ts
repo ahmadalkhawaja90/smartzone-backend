@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { connectDB } from './config/db';
 import { initTelegramBot } from './services/telegramBot';
 import { initOpportunityScheduler } from './services/scheduler';
+import { initTradeTracker } from './services/tradeTracker';
 
 // تحميل متغيرات البيئة
 dotenv.config();
@@ -34,9 +35,10 @@ const startServer = async () => {
     app.listen(PORT, () => {
       console.log(`📡 Server is running on port: ${PORT}`);
 
-      // 3. تشغيل البوت والماسح الذكي في الخلفية
+      // 3. تشغيل البوت والماسح الذكي ومتتبع الصفقات في الخلفية
       initTelegramBot();
       initOpportunityScheduler();
+      initTradeTracker(); // تم إضافة متتبع الصفقات هنا ✅
     });
   } catch (error) {
     console.error('❌ فشل بدء تشغيل السيرفر:', error);
