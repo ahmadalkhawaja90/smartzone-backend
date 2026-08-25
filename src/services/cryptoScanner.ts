@@ -242,9 +242,16 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
               const risk = entryPrice - stopLoss;
               
               if (risk > 0) {
-                const tp1 = parseFloat((entryPrice + risk * 1.5).toFixed(6));
-                const tp2 = parseFloat(mssHigh.price.toFixed(6));
-                const tp3 = parseFloat((entryPrice + risk * 3.0).toFixed(6));
+                // حساب الأهداف الخام
+                const rawTp1 = parseFloat((entryPrice + risk * 1.5).toFixed(6));
+                const rawTp2 = parseFloat(mssHigh.price.toFixed(6));
+                const rawTp3 = parseFloat((entryPrice + risk * 3.0).toFixed(6));
+
+                // ترتيب الأهداف تصاعدياً (للشراء)
+                const sortedTargets = [rawTp1, rawTp2, rawTp3].sort((a, b) => a - b);
+                const tp1 = sortedTargets[0];
+                const tp2 = sortedTargets[1];
+                const tp3 = sortedTargets[2];
 
                 return {
                   opportunity: {
@@ -328,9 +335,16 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
               const risk = stopLoss - entryPrice;
               
               if (risk > 0) {
-                const tp1 = parseFloat((entryPrice - risk * 1.5).toFixed(6));
-                const tp2 = parseFloat(mssLow.price.toFixed(6));
-                const tp3 = parseFloat((entryPrice - risk * 3.0).toFixed(6));
+                // حساب الأهداف الخام
+                const rawTp1 = parseFloat((entryPrice - risk * 1.5).toFixed(6));
+                const rawTp2 = parseFloat(mssLow.price.toFixed(6));
+                const rawTp3 = parseFloat((entryPrice - risk * 3.0).toFixed(6));
+
+                // ترتيب الأهداف تنازلياً (للبيع)
+                const sortedTargets = [rawTp1, rawTp2, rawTp3].sort((a, b) => b - a);
+                const tp1 = sortedTargets[0];
+                const tp2 = sortedTargets[1];
+                const tp3 = sortedTargets[2];
 
                 return {
                   opportunity: {
