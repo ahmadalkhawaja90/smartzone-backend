@@ -1,16 +1,19 @@
 import axios from 'axios';
 import { sendForexOpportunityToTelegram } from './telegramForex';
 import { generateChartPngBuffer, CandlePlotData } from './chartGenerator';
+import { watchEntryZone } from './finnhubPriceWatcher';
 
 const API_KEY = process.env.TWELVE_DATA_API_KEY || '7d5b98c57c0c4c05b856c93fdaebd37b';
+const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || 'da7bdi9r01qqqkkitr70da7bdi9r01qqqkkitr7g';
 
 // صجحنا القائمة: العملات الرئيسية فقط (بدون ذهب وبدون فضة)
+// أضفنا finnhubSymbol كبديل جلب بيانات بدل ياهو
 const TARGET_ASSETS = [
-  { symbol: 'EUR/USD', yahooTicker: 'EURUSD=X', decimals: 5, slBuffer: 0.0008, pipValuePerLot: 10 },
-  { symbol: 'GBP/USD', yahooTicker: 'GBPUSD=X', decimals: 5, slBuffer: 0.0009, pipValuePerLot: 10 },
-  { symbol: 'USD/JPY', yahooTicker: 'USDJPY=X', decimals: 3, slBuffer: 0.15, pipValuePerLot: 9.5 },
-  { symbol: 'AUD/USD', yahooTicker: 'AUDUSD=X', decimals: 5, slBuffer: 0.0008, pipValuePerLot: 10 },
-  { symbol: 'GBP/JPY', yahooTicker: 'GBPJPY=X', decimals: 3, slBuffer: 0.18, pipValuePerLot: 7.5 },
+  { symbol: 'EUR/USD', finnhubSymbol: 'OANDA:EUR_USD', decimals: 5, slBuffer: 0.0008, pipValuePerLot: 10 },
+  { symbol: 'GBP/USD', finnhubSymbol: 'OANDA:GBP_USD', decimals: 5, slBuffer: 0.0009, pipValuePerLot: 10 },
+  { symbol: 'USD/JPY', finnhubSymbol: 'OANDA:USD_JPY', decimals: 3, slBuffer: 0.15, pipValuePerLot: 9.5 },
+  { symbol: 'AUD/USD', finnhubSymbol: 'OANDA:AUD_USD', decimals: 5, slBuffer: 0.0008, pipValuePerLot: 10 },
+  { symbol: 'GBP/JPY', finnhubSymbol: 'OANDA:GBP_JPY', decimals: 3, slBuffer: 0.18, pipValuePerLot: 7.5 },
 ];
 
 export interface CandleData {
@@ -37,68 +40,93 @@ interface FVG {
 const sentForexCache = new Map<string, number>();
 
 // ==========================================================
-// 1. جلب الشموع البيانية
+// 1. جلب الشموع البيانية — Twelve Data أساسي، Finnhub بديل (بدل Yahoo)
 // ==========================================================
-const fetchForexCandles = async (asset: typeof TARGET_ASSETS[0], interval: '15m' | '1h', outputsize = 100): Promise<CandleData[]> => {
+const fetchFromTwelveData = async (
+  asset: typeof TARGET_ASSETS[0],
+  interval: '15m' | '1h',
+  outputsize: number
+): Promise<CandleData[]> => {
   const intervalParam = interval === '15m' ? '15min' : '1h';
 
-  try {
-    const res = await axios.get('https://api.twelvedata.com/time_series', {
-      params: { symbol: asset.symbol, interval: intervalParam, outputsize, apikey: API_KEY },
-      timeout: 10000,
-    });
+  const res = await axios.get('https://api.twelvedata.com/time_series', {
+    params: { symbol: asset.symbol, interval: intervalParam, outputsize, apikey: API_KEY },
+    timeout: 4500, // تقليل المهلة من 10 ثواني إلى 4.5 ثانية عشان ننتقل بسرعة أكبر للبديل عند التعثر
+  });
 
-    if (res.data?.values?.length) {
-      return res.data.values
-        .map((c: any) => ({
-          timestamp: new Date(c.datetime).getTime(),
-          open: parseFloat(c.open),
-          high: parseFloat(c.high),
-          low: parseFloat(c.low),
-          close: parseFloat(c.close),
-        }))
-        .reverse();
-    }
+  if (res.data?.values?.length) {
+    return res.data.values
+      .map((c: any) => ({
+        timestamp: new Date(c.datetime).getTime(),
+        open: parseFloat(c.open),
+        high: parseFloat(c.high),
+        low: parseFloat(c.low),
+        close: parseFloat(c.close),
+      }))
+      .reverse();
+  }
+  return [];
+};
+
+const fetchFromFinnhub = async (
+  asset: typeof TARGET_ASSETS[0],
+  interval: '15m' | '1h',
+  outputsize: number
+): Promise<CandleData[]> => {
+  const resolution = interval === '15m' ? '15' : '60';
+  const resolutionSeconds = interval === '15m' ? 15 * 60 : 60 * 60;
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - resolutionSeconds * (outputsize + 5); // هامش بسيط لضمان تغطية العدد المطلوب
+
+  const res = await axios.get('https://finnhub.io/api/v1/forex/candle', {
+    params: {
+      symbol: asset.finnhubSymbol,
+      resolution,
+      from,
+      to,
+      token: FINNHUB_API_KEY,
+    },
+    timeout: 4500,
+  });
+
+  const data = res.data;
+  if (data?.s !== 'ok' || !data?.c?.length) return [];
+
+  const candles: CandleData[] = [];
+  for (let i = 0; i < data.c.length; i++) {
+    candles.push({
+      timestamp: data.t[i] * 1000,
+      open: parseFloat(data.o[i].toFixed(asset.decimals)),
+      high: parseFloat(data.h[i].toFixed(asset.decimals)),
+      low: parseFloat(data.l[i].toFixed(asset.decimals)),
+      close: parseFloat(data.c[i].toFixed(asset.decimals)),
+    });
+  }
+  return candles.slice(-outputsize);
+};
+
+const fetchForexCandles = async (
+  asset: typeof TARGET_ASSETS[0],
+  interval: '15m' | '1h',
+  outputsize = 100
+): Promise<CandleData[]> => {
+  try {
+    const candles = await fetchFromTwelveData(asset, interval, outputsize);
+    if (candles.length) return candles;
   } catch {
-    // الانتقال للبديل الفوري
+    // الانتقال للبديل فوراً
   }
 
   try {
-    const yInterval = interval === '15m' ? '15m' : '60m';
-    const range = interval === '15m' ? '5d' : '30d';
-    const res = await axios.get(`https://query2.finance.yahoo.com/v8/finance/chart/${asset.yahooTicker}?interval=${yInterval}&range=${range}`, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      timeout: 10000,
-    });
-
-    const result = res.data?.chart?.result?.[0];
-    const timestamps = result?.timestamp || [];
-    const quote = result?.indicators?.quote?.[0];
-
-    if (quote?.close?.length) {
-      const candles: CandleData[] = [];
-      for (let i = 0; i < quote.close.length; i++) {
-        if (quote.open[i] && quote.high[i] && quote.low[i] && quote.close[i]) {
-          candles.push({
-            timestamp: (timestamps[i] || Date.now() / 1000) * 1000,
-            open: parseFloat(quote.open[i].toFixed(asset.decimals)),
-            high: parseFloat(quote.high[i].toFixed(asset.decimals)),
-            low: parseFloat(quote.low[i].toFixed(asset.decimals)),
-            close: parseFloat(quote.close[i].toFixed(asset.decimals)),
-          });
-        }
-      }
-      return candles.slice(-outputsize);
-    }
+    return await fetchFromFinnhub(asset, interval, outputsize);
   } catch {
     return [];
   }
-
-  return [];
 };
 
 // ==========================================================
 // 2. كشف السوينغات والفجوات المؤسسية (ICT Logic)
+// ما تغيّر أي سطر هون — نفس منهجية الاستراتيجية بالضبط
 // ==========================================================
 const findSwings = (candles: CandleData[], leftRight = 3): SwingPoint[] => {
   const swings: SwingPoint[] = [];
@@ -129,6 +157,7 @@ const detectFVGs = (candles: CandleData[], startIdx: number, endIdx: number): FV
 
 // ==========================================================
 // 3. المحلل الصارم (العملات الرئيسية فقط + السماح بصفقات الجمعة)
+// ما تغيّر أي سطر هون — نفس منهجية الاستراتيجية بالضبط
 // ==========================================================
 const analyzeForexICTSetup = (candles: CandleData[], asset: typeof TARGET_ASSETS[0], timeframe: '15m' | '1h') => {
   if (!candles || candles.length < 50) return null;
@@ -290,36 +319,49 @@ const analyzeForexICTSetup = (candles: CandleData[], asset: typeof TARGET_ASSETS
 };
 
 // ==========================================================
-// 4. تنفيذ الفحص الدوري للعملات الرئيسية فقط
+// 4. تنفيذ الفحص — الآن بالتوازي بدل التسلسل، وبدون تأخير صناعي بينهم
+//    عند اكتشاف فرصة، ما بنرسلها فوراً — بنسلّمها لمراقب السعر الحي
+//    (finnhubPriceWatcher) يلي بيراقب دخول السعر فعلياً لمنطقة الـ FVG
+//    عبر WebSocket قبل ما يطلق التنبيه، وهاد يلغي فرق الـ 9 نقاط
 // ==========================================================
 export const runForexScan = async () => {
-  try {
-    const targetTimeframes: Array<'15m' | '1h'> = ['1h', '15m'];
-    console.log(`🌍 [Forex Scanner] بدء فحص العملات الرئيسية...`);
+  console.log(`🌍 [Forex Scanner] بدء فحص العملات الرئيسية (متوازي)...`);
 
-    for (const asset of TARGET_ASSETS) {
-      for (const tf of targetTimeframes) {
-        const candles = await fetchForexCandles(asset, tf, 100);
-        if (candles.length < 50) continue;
-
-        const result = analyzeForexICTSetup(candles, asset, tf);
-
-        if (result && result.opportunity.confluenceScore >= 85) {
-          const cacheKey = `${asset.symbol}_${tf}_${result.opportunity.type}_${Math.floor(Date.now() / (3 * 60 * 60 * 1000))}`;
-          if (!sentForexCache.has(cacheKey)) {
-            const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
-            const sent = await sendForexOpportunityToTelegram(result.opportunity, chartBuffer);
-            if (sent) {
-              sentForexCache.set(cacheKey, Date.now());
-              console.log(`🎯 [Signal Sent Successfully]: ${asset.symbol} [${tf}] - ${result.opportunity.type}`);
-            }
-          }
-        }
-        await new Promise((r) => setTimeout(r, 1000));
-      }
+  const tasks: Array<{ asset: typeof TARGET_ASSETS[0]; tf: '15m' | '1h' }> = [];
+  for (const asset of TARGET_ASSETS) {
+    for (const tf of ['1h', '15m'] as const) {
+      tasks.push({ asset, tf });
     }
-    console.log(`✨ [Forex Scanner] اكتملت دورة الفحص بنجاح.`);
-  } catch (error: any) {
-    console.error('❌ خطأ في مسح الفوركس:', error.message);
   }
+
+  const results = await Promise.allSettled(
+    tasks.map(async ({ asset, tf }) => {
+      const candles = await fetchForexCandles(asset, tf, 100);
+      if (candles.length < 50) return;
+
+      const result = analyzeForexICTSetup(candles, asset, tf);
+      if (!result || result.opportunity.confluenceScore < 85) return;
+
+      const cacheKey = `${asset.symbol}_${tf}_${result.opportunity.type}_${Math.floor(Date.now() / (3 * 60 * 60 * 1000))}`;
+      if (sentForexCache.has(cacheKey)) return;
+
+      // بدل الإرسال الفوري: نراقب دخول السعر فعلياً لمنطقة الـ FVG قبل الإطلاق
+      sentForexCache.set(cacheKey, Date.now()); // نحجز الكاش فوراً لمنع التكرار أثناء المراقبة
+      watchEntryZone({
+        finnhubSymbol: asset.finnhubSymbol,
+        entryMin: result.opportunity.entryZone.min,
+        entryMax: result.opportunity.entryZone.max,
+        onEntryTriggered: async (triggerPrice: number) => {
+          const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
+          const sent = await sendForexOpportunityToTelegram(result.opportunity, chartBuffer);
+          if (sent) {
+            console.log(`🎯 [Signal Sent on Live Trigger]: ${asset.symbol} [${tf}] - ${result.opportunity.type} @ ${triggerPrice}`);
+          }
+        },
+      });
+    })
+  );
+
+  const failed = results.filter((r) => r.status === 'rejected').length;
+  console.log(`✨ [Forex Scanner] اكتملت دورة الفحص. فشل: ${failed}/${tasks.length}`);
 };
