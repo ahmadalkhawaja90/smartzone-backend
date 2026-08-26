@@ -50,13 +50,23 @@ export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer):
     const entryMin = opp.entryZone?.min ?? opp.currentPrice;
     const entryMax = opp.entryZone?.max ?? opp.currentPrice;
     const sl = opp.stopLoss ?? 0;
-    const tp1 = opp.targets?.tp1 ?? 0;
-    const tp2 = opp.targets?.tp2 ?? 0;
-    const tp3 = opp.targets?.tp3 ?? 0;
+    
+    const rawTp1 = opp.targets?.tp1 ?? opp.tp1 ?? 0;
+    const rawTp2 = opp.targets?.tp2 ?? opp.tp2 ?? 0;
+    const rawTp3 = opp.targets?.tp3 ?? opp.tp3 ?? 0;
     
     // تمييز نوع الصفقة وصياغة قصة الشارت الديناميكية
-    const isSell = opp.type === 'SELL';
+    const isSell = opp.type === 'SELL' || opp.type === 'SHORT';
     const typeBadge = isSell ? '🔴 بيع هابط (SELL / SHORT)' : '🟢 شراء صاعد (BUY / LONG)';
+
+    // 🛠️ ترتيب الأهداف بذكاء حسب نوع الصفقة (شراء تصاعدي / بيع تنازلي)
+    let targetsArr = [rawTp1, rawTp2, rawTp3].filter((t) => t > 0);
+    if (targetsArr.length > 0) {
+      targetsArr.sort((a, b) => (isSell ? b - a : a - b));
+    }
+    const tp1 = targetsArr[0] || rawTp1;
+    const tp2 = targetsArr[1] || rawTp2;
+    const tp3 = targetsArr[2] || rawTp3;
     
     const chartStory = isSell
       ? `1️⃣ *السحب (Sweep):* السعر صعد بقوة وسحب سيولة القمم السابقة.\n2️⃣ *الكسر (MSS):* هبط السعر بقوة وكسر هيكل السوق السابق.\n3️⃣ *الفجوة (FVG):* بسبب قوة الهبوط، ترك السعر وراءه فجوة سعرية (المستطيل الأزرق) لم يتم تداولها.\n4️⃣ *لحظة الدخول (الآن):* السعر صعد ليصحح، وبمجرد دخوله منطقة العلاوة (Premium) واقترابه من المستطيل الأزرق، أرسلنا لك الإشعار لتتمركز بأمان (OTE). 🎯`
