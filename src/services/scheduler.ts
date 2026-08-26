@@ -16,8 +16,7 @@ const executeForexScan = async () => {
   }
   isForexScanning = true;
   try {
-    console.log('🌍 بدء فحص أسواق الفوركس والذهب (ICT & Silver Bullet)...');
-    await runForexScan();
+    console.log('🌍 بدء فحص أسواق العملات الرئيسية (ICT Engine)...');    await runForexScan();
   } catch (error: any) {
     console.error('❌ خطأ أثناء تنفيذ فحص الفوركس:', error.message || error);
   } finally {

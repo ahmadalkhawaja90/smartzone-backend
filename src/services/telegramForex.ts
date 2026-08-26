@@ -14,12 +14,6 @@ export const sendForexOpportunityToTelegram = async (opp: any, chartBuffer?: Buf
     return false;
   }
 
-  // فلتر السكور الذهبي للفوركس (60% فما فوق)
-  const score = opp.confluenceScore || opp.score || 0;
-  if (score < 60) {
-    return false;
-  }
-
   try {
     const symbol = opp.symbol || 'ASSET';
     const timeframe = opp.timeframe || '15m';
@@ -39,7 +33,6 @@ export const sendForexOpportunityToTelegram = async (opp: any, chartBuffer?: Buf
 💎 *الأصل:* \`${symbol}\`
 ⏱️ *الفريم:* \`${timeframe}\`
 🚦 *نوع الصفقة:* *${typeLabel}*
-🏆 *قوة التوافق:* \`${score}%\` 🔥
 ═════════════════════════
 🎯 *منطقة الدخول:* \`${entryMin} - ${entryMax}\`
 🛑 *وقف الخسارة:* \`${sl}\` ❌
@@ -62,16 +55,16 @@ export const sendForexOpportunityToTelegram = async (opp: any, chartBuffer?: Buf
       await bot.sendMessage(CHANNEL_ID, message, { parse_mode: 'Markdown' });
     }
 
-    console.log(`✅ تم نشر التقرير الفني للزوج [${symbol} - ${timeframe}] بسكور ${score}% بنجاح.`);
+    console.log(`✅ تم نشر التقرير الفني للزوج [${symbol} - ${timeframe}] بنجاح.`);
     return true;
   } catch (error) {
-    console.error('❌ خطأ في إرسال تقرير الفوركس:', error);
+    console.error('❌ خطأ في إرسال تقرير العملات:', error);
     return false;
   }
 };
 
-// تشغيل نظام البوت بدون إرسال أي رسائل تيست
+// تشغيل نظام البوت
 export const initForexTelegramBot = () => {
   if (!token) return;
-  console.log('🤖 تم تشغيل نظام إشعارات الفوركس والذهب بنجاح...');
+  console.log('🤖 تم تشغيل نظام إشعارات العملات الرئيسية بنجاح...');
 };
