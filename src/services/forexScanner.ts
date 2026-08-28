@@ -40,7 +40,7 @@ interface FVG {
 const sentForexCache = new Map<string, number>();
 
 // ==========================================================
-// 1. جلب الشموع البيانية — Twelve Data أساسي، Finnhub بديل (بدل Yahoo)
+// 1. جلب الشموع البيانية — Twelve Data أساسي، Finnhub بديل
 // ==========================================================
 const fetchFromTwelveData = async (
   asset: typeof TARGET_ASSETS[0],
@@ -51,7 +51,7 @@ const fetchFromTwelveData = async (
 
   const res = await axios.get('https://api.twelvedata.com/time_series', {
     params: { symbol: asset.symbol, interval: intervalParam, outputsize, apikey: API_KEY },
-    timeout: 4500, // تقليل المهلة من 10 ثواني إلى 4.5 ثانية عشان ننتقل بسرعة أكبر للبديل عند التعثر
+    timeout: 4500,
   });
 
   if (res.data?.values?.length) {
@@ -76,7 +76,7 @@ const fetchFromFinnhub = async (
   const resolution = interval === '15m' ? '15' : '60';
   const resolutionSeconds = interval === '15m' ? 15 * 60 : 60 * 60;
   const to = Math.floor(Date.now() / 1000);
-  const from = to - resolutionSeconds * (outputsize + 5); // هامش بسيط لضمان تغطية العدد المطلوب
+  const from = to - resolutionSeconds * (outputsize + 5);
 
   const res = await axios.get('https://finnhub.io/api/v1/forex/candle', {
     params: {
@@ -126,7 +126,6 @@ const fetchForexCandles = async (
 
 // ==========================================================
 // 2. كشف السوينغات والفجوات المؤسسية (ICT Logic)
-// ما تغيّر أي سطر هون — نفس منهجية الاستراتيجية بالضبط
 // ==========================================================
 const findSwings = (candles: CandleData[], leftRight = 3): SwingPoint[] => {
   const swings: SwingPoint[] = [];
@@ -157,7 +156,6 @@ const detectFVGs = (candles: CandleData[], startIdx: number, endIdx: number): FV
 
 // ==========================================================
 // 3. المحلل الصارم (العملات الرئيسية فقط + السماح بصفقات الجمعة)
-// ما تغيّر أي سطر هون — نفس منهجية الاستراتيجية بالضبط
 // ==========================================================
 const analyzeForexICTSetup = (candles: CandleData[], asset: typeof TARGET_ASSETS[0], timeframe: '15m' | '1h') => {
   if (!candles || candles.length < 50) return null;
@@ -319,10 +317,7 @@ const analyzeForexICTSetup = (candles: CandleData[], asset: typeof TARGET_ASSETS
 };
 
 // ==========================================================
-// 4. تنفيذ الفحص — الآن بالتوازي بدل التسلسل، وبدون تأخير صناعي بينهم
-//    عند اكتشاف فرصة، ما بنرسلها فوراً — بنسلّمها لمراقب السعر الحي
-//    (finnhubPriceWatcher) يلي بيراقب دخول السعر فعلياً لمنطقة الـ FVG
-//    عبر WebSocket قبل ما يطلق التنبيه، وهاد يلغي فرق الـ 9 نقاط
+// 4. تنفيذ الفحص — بالتوازي وبدون تأخير، مع مراقب السعر الحي
 // ==========================================================
 export const runForexScan = async () => {
   console.log(`🌍 [Forex Scanner] بدء فحص العملات الرئيسية (متوازي)...`);
@@ -345,8 +340,7 @@ export const runForexScan = async () => {
       const cacheKey = `${asset.symbol}_${tf}_${result.opportunity.type}_${Math.floor(Date.now() / (3 * 60 * 60 * 1000))}`;
       if (sentForexCache.has(cacheKey)) return;
 
-      // بدل الإرسال الفوري: نراقب دخول السعر فعلياً لمنطقة الـ FVG قبل الإطلاق
-      sentForexCache.set(cacheKey, Date.now()); // نحجز الكاش فوراً لمنع التكرار أثناء المراقبة
+      sentForexCache.set(cacheKey, Date.now()); // حجز الكاش لمنع التكرار
       watchEntryZone({
         finnhubSymbol: asset.finnhubSymbol,
         entryMin: result.opportunity.entryZone.min,
