@@ -8,7 +8,7 @@ let isForexScanning = false;
 let isCryptoScanning = false;
 let isHarmonicScanning = false;
 
-// دالة تنفيذ فحص الفوركس والذهب
+// دالة تنفيذ فحص الفوركس
 const executeForexScan = async () => {
   if (isForexScanning) {
     console.warn('⚠️ فحص الفوركس السابق لا يزال قيد التنفيذ، تم تخطي هذه الدورة.');
@@ -16,7 +16,8 @@ const executeForexScan = async () => {
   }
   isForexScanning = true;
   try {
-    console.log('🌍 بدء فحص أسواق العملات الرئيسية (ICT Engine)...');    await runForexScan();
+    console.log('🌍 بدء فحص أسواق العملات الرئيسية لحظياً (ICT Engine)...');
+    await runForexScan();
   } catch (error: any) {
     console.error('❌ خطأ أثناء تنفيذ فحص الفوركس:', error.message || error);
   } finally {
@@ -24,7 +25,7 @@ const executeForexScan = async () => {
   }
 };
 
-// دالة تنفيذ فحص الكريبتو
+// دالة تنفيذ فحص الكريبتو (لم يتم تغييرها نهائياً)
 const executeCryptoScan = async () => {
   if (isCryptoScanning) {
     console.warn('⚠️ فحص الكريبتو السابق لا يزال قيد التنفيذ، تم تخطي هذه الدورة.');
@@ -41,7 +42,7 @@ const executeCryptoScan = async () => {
   }
 };
 
-// دالة تنفيذ فحص نماذج الهارمونيك
+// دالة تنفيذ فحص نماذج الهارمونيك (لم يتم تغييرها نهائياً)
 const executeHarmonicScan = async () => {
   if (isHarmonicScanning) {
     console.warn('⚠️ فحص الهارمونيك السابق لا يزال قيد التنفيذ، تم تخطي هذه الدورة.');
@@ -65,17 +66,17 @@ export const initOpportunityScheduler = () => {
   executeCryptoScan();
   executeHarmonicScan();
 
-  // 2. فحص الفوركس والمعادن كل 5 دقائق
-  cron.schedule('*/5 * * * *', async () => {
+  // 2. فحص الفوركس يضبط تماماً في الدقيقة الأولى من كل ساعة (لصيد الفرصة فور إغلاق الشمعة تماماً)
+  cron.schedule('0 * * * *', async () => {
     await executeForexScan();
   });
 
-  // 3. فحص العملات الرقمية كل 10 دقائق
+  // 3. فحص العملات الرقمية كل 10 دقائق (كما هي دون تغيير)
   cron.schedule('*/10 * * * *', async () => {
     await executeCryptoScan();
   });
 
-  // 4. فحص نماذج الهارمونيك كل 15 دقيقة
+  // 4. فحص نماذج الهارمونيك كل 15 دقيقة (كما هي دون تغيير)
   cron.schedule('*/15 * * * *', async () => {
     await executeHarmonicScan();
   });
