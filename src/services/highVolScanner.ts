@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { Opportunity } from '../models/Opportunity';
-import { sendOpportunityToTelegram } from './telegramHighVolbot';
+import { sendOpportunityToTelegram } from './telegramHighVolBot';
 import { generateChartPngBuffer, CandlePlotData } from './chartGenerator';
 
 export interface CandleData {
@@ -268,7 +268,7 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
 // ==========================================
 // 5. تشغيل المسح المخصص للعملات عالية التقلب
 // ==========================================
-export const runFullCryptoScan = async () => {
+export const runHighVolCryptoScan = async () => {
   const targetTimeframes = ['1h', '4h'];
   console.log(`🚀 [High-Vol Crypto Scanner] بدء فحص العملات عالية التقلب (${HIGH_VOLATILITY_PAIRS.length} زوج)...`);
 
