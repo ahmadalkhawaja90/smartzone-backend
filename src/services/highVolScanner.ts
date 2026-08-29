@@ -180,15 +180,13 @@ const detectFVGs = (candles: CandleData[], startIdx: number, endIdx: number): FV
 
     if (c1.high < c3.low) {
       fvgs.push({ startIndex: i, top: c3.low, bottom: c1.high, type: 'BULLISH' });
-    } else if (c1.low > c3.high) {
-      fvgs.push({ startIndex: i, top: c1.low, bottom: c3.high, type: 'BEARISH' });
     }
   }
   return fvgs;
 };
 
 // ==========================================================
-// 5. خوارزمية تحليل ICT الذكية
+// 5. خوارزمية تحليل ICT الذكية (شراء فقط - Buy Only)
 // ==========================================================
 export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe: string) => {
   if (candles.length < 50) return null;
@@ -204,6 +202,7 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
   for (let i = recentSwings.length - 1; i >= 2; i--) {
     const sweepNode = recentSwings[i];
 
+    // نموذج الشراء الصاعد فقط (Bullish ICT)
     if (sweepNode.type === 'LOW') {
       let prevLow = null;
       let mssHigh = null;
@@ -282,95 +281,16 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
         }
       }
     }
-
-    if (sweepNode.type === 'HIGH') {
-      let prevHigh = null;
-      let mssLow = null;
-
-      for (let j = i - 1; j >= 0; j--) {
-        if (recentSwings[j].type === 'HIGH' && sweepNode.price > recentSwings[j].price) {
-          prevHigh = recentSwings[j];
-          let minPrice = Infinity;
-          for (let k = j; k <= i; k++) {
-            if (recentSwings[k].type === 'LOW' && recentSwings[k].price < minPrice) {
-              minPrice = recentSwings[k].price;
-              mssLow = recentSwings[k];
-            }
-          }
-          break; 
-        }
-      }
-
-      if (prevHigh && mssLow) {
-        let mssIdx = -1;
-        let lowestAfterMSS = sweepNode.price;
-
-        for (let c = sweepNode.index + 1; c < candles.length - 1; c++) {
-          if (candles[c].low < lowestAfterMSS) lowestAfterMSS = candles[c].low;
-          if (mssIdx === -1 && candles[c].close < mssLow.price) {
-            mssIdx = c;
-          }
-        }
-
-        if (mssIdx !== -1 && (candles.length - mssIdx <= 30)) {
-          const impulseHigh = sweepNode.price;
-          const equilibrium = impulseHigh - (impulseHigh - lowestAfterMSS) * 0.5;
-
-          const fvgs = detectFVGs(candles, sweepNode.index, mssIdx);
-          const validFVG = fvgs.reverse().find(f => {
-            if (f.type !== 'BEARISH' || f.bottom < equilibrium) return false;
-            let closed = false;
-            for(let m = f.startIndex + 2; m < candles.length - 1; m++) {
-              if (candles[m].high > f.top) closed = true;
-            }
-            return !closed;
-          });
-
-          if (validFVG) {
-            if (currentPrice >= equilibrium && currentPrice < validFVG.top * 1.002) {
-              const entryPrice = validFVG.bottom;
-              const stopLoss = parseFloat((impulseHigh * 1.003).toFixed(6));
-              const risk = stopLoss - entryPrice;
-              
-              if (risk > 0) {
-                const rawTp1 = parseFloat((entryPrice - risk * 1.5).toFixed(6));
-                const rawTp2 = parseFloat(mssLow.price.toFixed(6));
-                const rawTp3 = parseFloat((entryPrice - risk * 3.0).toFixed(6));
-                const sortedTargets = [rawTp1, rawTp2, rawTp3].sort((a, b) => b - a);
-
-                return {
-                  opportunity: {
-                    symbol, baseAsset, market: 'crypto' as const, timeframe,
-                    type: 'SELL' as const, currentPrice,
-                    entryZone: { min: parseFloat(validFVG.bottom.toFixed(6)), max: parseFloat(validFVG.top.toFixed(6)) },
-                    stopLoss, targets: { tp1: sortedTargets[0], tp2: sortedTargets[1], tp3: sortedTargets[2] },
-                    riskRewardRatio: '1:3.0', confluenceScore: 98,
-                    fulfilledConditions: [
-                      { title: 'Liquidity Sweep', description: `سحب سيولة القمة $${prevHigh.price}` },
-                      { title: 'True MSS', description: `كسر حقيقي للهيكل أسفل $${mssLow.price}` },
-                      { title: 'Fresh Premium FVG', description: `عودة السعر لاختبار فجوة بيعية` },
-                    ],
-                    analysisReasons: { entryReason: `بيع من FVG مثالية.`, stopLossReason: `وقف أعلى قمة السحب $${stopLoss}.`, takeProfitReason: `TP1: $${sortedTargets[0]} | TP2: $${sortedTargets[1]}` },
-                    status: 'ACTIVE' as const,
-                  },
-                  chartOptions: { symbol, timeframe, entry: entryPrice, stopLoss, tp1: sortedTargets[0], tp2: sortedTargets[1], tp3: sortedTargets[2], fvgTop: validFVG.top, fvgBottom: validFVG.bottom },
-                };
-              }
-            }
-          }
-        }
-      }
-    }
   }
   return null;
 };
 
 // ==========================================
-// 6. تشغيل المسح الدوري الشامل مع فلتر ATRP
+// 6. تشغيل المسح الدوري الشامل
 // ==========================================
 export const runHighVolCryptoScan = async () => {
   const targetTimeframes = ['1h', '4h'];
-  console.log('🚀 [High Vol Scanner] بدء دورة الفحص لعملات التقلب العالي...');
+  console.log('🚀 [High Vol Scanner] بدء دورة الفحص لفرص الشراء فقط...');
 
   let symbols: string[] = [];
   try {
@@ -381,7 +301,7 @@ export const runHighVolCryptoScan = async () => {
   }
 
   let discoveredCount = 0;
-  const MIN_VOLATILITY_PERCENT = 4.0; // تجاهل العملات الأقل من 4% حركة
+  const MIN_VOLATILITY_PERCENT = 4.0;
 
   for (const symbol of symbols) {
     for (const tf of targetTimeframes) {
@@ -407,7 +327,7 @@ export const runHighVolCryptoScan = async () => {
           if (!existing) {
             const createdOpp = await Opportunity.create(result.opportunity);
             discoveredCount++;
-            console.log(`🎯 [فرصة ICT سريعة رُصدت]: ${symbol} [${tf}] - ATRP: ${atrp}%`);
+            console.log(`🎯 [فرصة شراء سريعة رُصدت]: ${symbol} [${tf}] - ATRP: ${atrp}%`);
 
             const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
 
@@ -423,5 +343,5 @@ export const runHighVolCryptoScan = async () => {
     }
   }
 
-  console.log(`✨ [High Vol Scanner] اكتمل الفحص: رُصدت ${discoveredCount} فرصة سريعة.`);
+  console.log(`✨ [High Vol Scanner] اكتمل الفحص: رُصدت ${discoveredCount} فرصة شراء سريعة.`);
 };
