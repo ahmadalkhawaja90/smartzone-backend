@@ -5,7 +5,7 @@ import { connectDB } from './config/db';
 import { initTelegramBot } from './services/telegramBot';
 import { initOpportunityScheduler } from './services/scheduler';
 import { initTradeTracker } from './services/tradeTracker';
-import { sendOpportunityToTelegram } from './services/telegramHighVolBot'; // استيراد دالة إرسال التليجرام
+import { sendOpportunityToTelegram } from './services/telegramHighVolBot';
 
 // تحميل متغيرات البيئة
 dotenv.config();
@@ -52,8 +52,14 @@ app.get('/test-opportunity', async (req: Request, res: Response) => {
       status: 'ACTIVE'
     };
 
-    // إرسال الصفقة التجريبية (بدون شارت أو مع شارت فارغ)
-    await sendOpportunityToTelegram(mockOpportunity as any);
+    // صورة شفافة 1x1 تجريبية في حال كانت الدالة تطلب Buffer للصورة
+    const dummyChartBuffer = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64'
+    );
+
+    // إرسال الصفقة التجريبية
+    await sendOpportunityToTelegram(mockOpportunity as any, dummyChartBuffer as any);
 
     res.status(200).json({ success: true, message: '✅ تم إرسال صفقة الاختبار إلى التليجرام بنجاح!' });
   } catch (error: any) {
