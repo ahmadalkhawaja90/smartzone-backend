@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { Opportunity } from '../models/Opportunity';
-import { sendOpportunityToTelegram } from './telegramBot';
+import { sendOpportunityToTelegram } from './telegramHighVolbot';
 import { generateChartPngBuffer, CandlePlotData } from './chartGenerator';
 
 export interface CandleData {
