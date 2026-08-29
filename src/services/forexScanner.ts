@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { Opportunity } from '../models/Opportunity';
 import { sendForexOpportunityToTelegram } from './telegramForex';
-import { generateChartPngBuffer } from './chartRenderer';
+import { generateChartPngBuffer } from './chartGenerator';
 
 const TARGET_ASSETS = [
   { symbol: 'EUR/USD', yahooTicker: 'EURUSD=X', decimals: 5, slBuffer: 0.0008 },
@@ -130,7 +130,7 @@ const analyzeForexICTSetup = (candles: CandleData[], asset: typeof TARGET_ASSETS
     if (!validFVG) return null;
 
     const entryPrice = validFVG.top;
-    
+
     // فلتر منع التأخير: التأكد أن السعر الحالي لم يبتعد كثيرًا عن منطقة الدخول
     if (currentPrice > entryPrice * 1.003) return null;
 
@@ -202,8 +202,8 @@ const analyzeForexICTSetup = (candles: CandleData[], asset: typeof TARGET_ASSETS
   return null;
 };
 
-// الدالة الرئيسية التي يتم جدولتها للعمل بشكل آلي
-export const executeForexScan = async () => {
+// الدالة الرئيسية لفحص وتتبع صفقات الفوركس الحية
+export const runForexScan = async () => {
   console.log('🌍 [Forex Live Scanner] بدأ فحص أزواج العملات الحية...');
   let detectedCount = 0;
 
@@ -244,10 +244,9 @@ export const executeForexScan = async () => {
         // توليد شارت الصفقة
         let chartBuffer: Buffer | undefined;
         try {
-          chartBuffer = await generateChartPngBuffer({
+          chartBuffer = await (generateChartPngBuffer as any)(candles, {
             symbol: asset.symbol,
             timeframe: '1h',
-            candles,
             entryZone: setup.entryZone,
             stopLoss: setup.stopLoss,
             targets: setup.targets,
@@ -258,8 +257,8 @@ export const executeForexScan = async () => {
           console.warn(`⚠️ تعذر توليد الشارت لـ ${asset.symbol}:`, chartErr.message);
         }
 
-        // إرسال التنبيه الفوري لقناة الفوركس التابعة لك
-        await sendForexOpportunityToTelegram(savedOpp, chartBuffer);
+        // إرسال التنبيه الفوري لقناة الفوركس
+        await (sendForexOpportunityToTelegram as any)(savedOpp, chartBuffer);
         detectedCount++;
       }
 
@@ -271,3 +270,5 @@ export const executeForexScan = async () => {
 
   console.log(`✨ [Forex Live Scanner] انتهت دورة الفحص. رُصدت ${detectedCount} فرصة جديدة.`);
 };
+
+export const executeForexScan = runForexScan;
