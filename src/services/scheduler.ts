@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { runFullCryptoScan } from './cryptoScanner';
-import { runHighVolCryptoScan } from './highVolScanner'; // استدعاء فاحص العملات السريعة
+import { runHighVolCryptoScan } from './highVolScanner';
 import { runForexScan } from './forexScanner';
 import { scanAllHarmonics } from './harmonicsScanner';
 
@@ -44,7 +44,7 @@ const executeCryptoScan = async () => {
   }
 };
 
-// دالة تنفيذ فحص العملات الرقمية عالية التقلب (المسار الجديد)
+// دالة تنفيذ فحص العملات الرقمية عالية التقلب
 const executeHighVolCryptoScan = async () => {
   if (isHighVolScanning) {
     console.warn('⚠️ فحص العملات السريعة السابق لا يزال قيد التنفيذ، تم تخطي هذه الدورة.');
@@ -80,11 +80,11 @@ const executeHarmonicScan = async () => {
 export const initOpportunityScheduler = () => {
   console.log('⏰ تم تهيئة مجدول الفرص الآلي (ICT Crypto, High-Vol Crypto, Forex & Harmonic Scanners)...');
 
-  // 1. تشغيل فحص فوري عند إقلاع السيرفر
-  executeForexScan();
-  executeCryptoScan();
-  executeHighVolCryptoScan();
-  executeHarmonicScan();
+  // 1. تشغيل فحص أولي بتسلسل زمني لتجنب الضغط على الـ API
+  setTimeout(() => executeCryptoScan(), 2000);
+  setTimeout(() => executeHighVolCryptoScan(), 10000);
+  setTimeout(() => executeHarmonicScan(), 20000);
+  setTimeout(() => executeForexScan(), 30000);
 
   // 2. فحص الفوركس في بداية كل ساعة
   cron.schedule('0 * * * *', async () => {
@@ -96,8 +96,8 @@ export const initOpportunityScheduler = () => {
     await executeCryptoScan();
   });
 
-  // 4. فحص العملات الرقمية عالية التقلب كل 10 دقائق
-  cron.schedule('*/10 * * * *', async () => {
+  // 4. فحص العملات الرقمية عالية التقلب كل 10 دقائق (متباعدة بفارق 5 دقائق عن الكريبتو الأساسي)
+  cron.schedule('5,15,25,35,45,55 * * * *', async () => {
     await executeHighVolCryptoScan();
   });
 
