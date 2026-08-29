@@ -2,7 +2,6 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { connectDB } from './config/db';
-import { initTelegramBot } from './services/telegramBot';
 import { initOpportunityScheduler } from './services/scheduler';
 import { initTradeTracker } from './services/tradeTracker';
 
@@ -25,19 +24,20 @@ app.get('/health', (req: Request, res: Response) => {
   res.json({ status: 'OK', timestamp: new Date() });
 });
 
-// بدء التشغيل وربط الخدمات الخلفية
+// بدء التشغيل وربط الخدمات
 const startServer = async () => {
   try {
-    // 1. الاتصال بقاعدة البيانات أولاً
+    // 1. الاتصال بقاعدة البيانات
     await connectDB();
 
     // 2. تشغيل السيرفر
     app.listen(PORT, () => {
       console.log(`📡 Server is running on port: ${PORT}`);
 
-      // 3. تشغيل البوت والماسحات التلقائية ومتتبع الصفقات
-      initTelegramBot();
+      // 3. تشغيل جدول الفحص الآلي (Crypto, High-Vol, Forex, Harmonics)
       initOpportunityScheduler();
+
+      // 4. تشغيل متتبع الصفقات
       initTradeTracker();
     });
   } catch (error) {
