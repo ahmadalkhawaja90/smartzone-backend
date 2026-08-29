@@ -1,7 +1,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
-const channelId =
+const CHANNEL_ID = process.env.HIGH_VOL_TELEGRAM_CHANNEL_ID || process.env.TELEGRAM_CHANNEL_ID;
 
 // إنشاء نسخة البوت
 let bot: TelegramBot | null = null;
@@ -29,14 +29,13 @@ export const generateOneTimeInviteLink = async (): Promise<string | null> => {
   }
 };
 
-// 2. إرسال تقرير الرصد الهيكلي مع الشارت فورياً إلى قناة التلغرام
+// 2. إرسال تقرير الرصد مع الشارت فورياً إلى قناة التلغرام
 export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer): Promise<boolean> => {
   if (!bot || !CHANNEL_ID) {
     console.error('⚠️ مفقود TELEGRAM_BOT_TOKEN أو TELEGRAM_CHANNEL_ID في .env');
     return false;
   }
 
-  // 🎯 الفلتر المعتمد: قبول الصفقات ذات نسبة التوافق 60% فما فوق
   const score = opp.confluenceScore || 0;
   
   if (score < 60) {
@@ -55,11 +54,9 @@ export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer):
     const rawTp2 = opp.targets?.tp2 ?? opp.tp2 ?? 0;
     const rawTp3 = opp.targets?.tp3 ?? opp.tp3 ?? 0;
     
-    // تمييز نوع الصفقة وصياغة قصة الشارت الديناميكية
     const isSell = opp.type === 'SELL' || opp.type === 'SHORT';
     const typeBadge = isSell ? '🔴 بيع هابط (SELL / SHORT)' : '🟢 شراء صاعد (BUY / LONG)';
 
-    // 🛠️ ترتيب الأهداف بذكاء حسب نوع الصفقة (شراء تصاعدي / بيع تنازلي)
     let targetsArr = [rawTp1, rawTp2, rawTp3].filter((t) => t > 0);
     if (targetsArr.length > 0) {
       targetsArr.sort((a, b) => (isSell ? b - a : a - b));
@@ -109,8 +106,8 @@ ${chartStory}
   }
 };
 
-// 3. تشغيل نظام الحماية
+// 3. تشغيل نظام الإشعارات
 export const initTelegramBot = () => {
   if (!token) return;
-  console.log('🤖 تم تشغيل نظام حماية وإشعارات القناة بنجاح...');
+  console.log('🤖 تم تشغيل نظام إشعارات السيولة العالية بنجاح...');
 };
