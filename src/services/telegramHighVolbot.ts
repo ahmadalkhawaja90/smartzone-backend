@@ -1,7 +1,12 @@
 import TelegramBot from 'node-telegram-bot-api';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
-const CHANNEL_ID = process.env.HIGH_VOL_TELEGRAM_CHANNEL_ID || process.env.TELEGRAM_CHANNEL_ID;
+// تم تصحيح اسم المتغير ليتطابق مع Render تماماً مع دعم جميع الاحتمالات
+const CHANNEL_ID = 
+  process.env.TELEGRAM_CHANNEL_HIGH_VOL_ID || 
+  process.env.HIGH_VOL_TELEGRAM_CHANNEL_ID || 
+  process.env.TELEGRAM_HIGH_VOL_CHANNEL_ID || 
+  process.env.TELEGRAM_CHANNEL_ID;
 
 // إنشاء نسخة البوت
 let bot: TelegramBot | null = null;
@@ -12,7 +17,7 @@ if (token) {
 // 1. توليد رابط دعوة لمرة واحدة للمشتركين
 export const generateOneTimeInviteLink = async (): Promise<string | null> => {
   if (!bot || !CHANNEL_ID) {
-    console.error('⚠️ مفقود TELEGRAM_BOT_TOKEN أو TELEGRAM_CHANNEL_ID في .env');
+    console.error('⚠️ مفقود TELEGRAM_BOT_TOKEN أو معرف القناة في .env');
     return null;
   }
 
@@ -32,7 +37,7 @@ export const generateOneTimeInviteLink = async (): Promise<string | null> => {
 // 2. إرسال تقرير الرصد مع الشارت فورياً إلى قناة التلغرام
 export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer): Promise<boolean> => {
   if (!bot || !CHANNEL_ID) {
-    console.error('⚠️ مفقود TELEGRAM_BOT_TOKEN أو TELEGRAM_CHANNEL_ID في .env');
+    console.error('⚠️ مفقود TELEGRAM_BOT_TOKEN أو معرف القناة في .env');
     return false;
   }
 
@@ -98,7 +103,7 @@ ${chartStory}
       await bot.sendMessage(CHANNEL_ID, message, { parse_mode: 'Markdown' });
     }
 
-    console.log(`✅ تم نشر التقرير الفني للزوج ${symbol} (بسكور ${score}%) على قناة التلغرام بنجاح.`);
+    console.log(`✅ تم نشر التقرير الفني للزوج ${symbol} (بسكور ${score}%) على قناة السيولة العالية بنجاح.`);
     return true;
   } catch (error) {
     console.error('❌ خطأ في إرسال التقرير إلى التلغرام:', error);
@@ -107,7 +112,7 @@ ${chartStory}
 };
 
 // 3. تشغيل نظام الإشعارات
-export const initTelegramBot = () => {
+export const initTelegramHighVolBot = () => {
   if (!token) return;
   console.log('🤖 تم تشغيل نظام إشعارات السيولة العالية بنجاح...');
 };
