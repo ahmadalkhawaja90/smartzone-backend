@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { Opportunity } from '../models/Opportunity';
-import { sendOpportunityToTelegram } from './telegramHighVolBot';
+import { sendOpportunityToTelegram } from './telegramHighVolbot';
 import { generateChartPngBuffer, CandlePlotData } from './chartGenerator';
 
 export interface CandleData {
@@ -207,7 +207,7 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
           });
 
           if (validFVG) {
-            // 4. فلتر منع التأخير: التأكد أن السعر لم ينطلق مبتعداً عن الفجوة بأكثر من 0.6%
+            // 4. فلتر منع التأخير
             if (currentPrice > validFVG.top * 1.006) {
               continue;
             }
@@ -297,8 +297,8 @@ export const runHighVolCryptoScan = async () => {
 
             const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
 
-            sendOpportunityToTelegram(createdOpp, chartBuffer).catch((err) => {
-              console.error(`⚠️ خطأ إرسال التلغرام لـ ${symbol}:`, err.message);
+            sendOpportunityToTelegram(createdOpp, chartBuffer).catch((err: any) => {
+              console.error(`⚠️ خطأ إرسال التلغرام لـ ${symbol}:`, err?.message || err);
             });
           }
         }
