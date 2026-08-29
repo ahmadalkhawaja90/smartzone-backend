@@ -1,22 +1,10 @@
 import axios from 'axios';
 import { Opportunity } from '../models/Opportunity';
-import { sendOpportunityToTelegram } from './TelegramHighVolbot';
-import { generateChartPngBuffer, CandlePlotData } from './chartGenerator';
+import { sendHighVolOpportunityToTelegram } from './telegramHighVol';
+import { generateChartPngBuffer } from './chartRenderer';
 
-export interface CandleData {
-  openTime: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
-
-// ==========================================================
-// 1. قائمة العملات عالية التقلب والسيولة (Mid & Low Caps / Memecoins)
-// ==========================================================
-const HIGH_VOL_PAIRS = [
-  'PEPEUSDT', 'WIFUSDT', 'BONKUSDT', 'FLOKIUSDT', 'BOMEUSDT', 'MEWUSDT', 'POPCATUSDT',
+export const HIGH_VOL_PAIRS = [
+  'BEAMUSDT', 'PEPEUSDT', 'WIFUSDT', 'BONKUSDT', 'FLOKIUSDT', 'BOMEUSDT', 'MEWUSDT', 'POPCATUSDT',
   'INJUSDT', 'FETUSDT', 'RNDRUSDT', 'RENDERUSDT', 'TAOUSDT', 'ARKMUSDT', 'WLDUSDT',
   'SUIUSDT', 'SEIUSDT', 'APTUSDT', 'TIAUSDT', 'ORDIUSDT', '1000SATSUSDT', 'KASUSDT',
   'TRBUSDT', 'UMAUSDT', 'GASUSDT', 'CYBERUSDT', 'YGGUSDT', 'GALAUSDT', 'CFXUSDT',
@@ -25,323 +13,163 @@ const HIGH_VOL_PAIRS = [
   'BBUSDT', 'NOTUSDT', 'TONUSDT', 'PEOPLEUSDT', 'ENSUSDT', 'MEMEUSDT', 'WUSDT', 'BLURUSDT'
 ];
 
-export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
-  try {
-    const res = await axios.get('https://api.bybit.com/v5/market/tickers?category=spot', {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      timeout: 10000,
-    });
-
-    const blacklist = ['USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'BUSDUSDT', 'EURUSDT', 'DAIUSDT', 'USDEUSDT'];
-
-    const dynamicTop = res.data.result.list
-      .filter((item: any) => item.symbol.endsWith('USDT') && !blacklist.includes(item.symbol))
-      .sort((a: any, b: any) => parseFloat(b.turnover24h) - parseFloat(a.turnover24h))
-      .slice(0, 80)
-      .map((item: any) => item.symbol);
-
-    return Array.from(new Set([...HIGH_VOL_PAIRS, ...dynamicTop])).slice(0, 60);
-  } catch (error) {
-    return HIGH_VOL_PAIRS.slice(0, 60);
-  }
-};
-
-// ==========================================================
-// 2. دالة حساب نسبة التقلب المئوية (ATRP Filter)
-// ==========================================================
-export const calculateATRP = (candles: CandleData[], period = 14): number => {
-  if (candles.length < period + 1) return 0;
-
-  let totalTrueRangePercent = 0;
-  const targetCandles = candles.slice(-period);
-
-  for (let i = 1; i < targetCandles.length; i++) {
-    const current = targetCandles[i];
-    const prev = targetCandles[i - 1];
-
-    const tr = Math.max(
-      current.high - current.low,
-      Math.abs(current.high - prev.close),
-      Math.abs(current.low - prev.close)
-    );
-
-    const trPercent = (tr / current.close) * 100;
-    totalTrueRangePercent += trPercent;
-  }
-
-  return parseFloat((totalTrueRangePercent / (period - 1)).toFixed(2));
-};
-
-// ==========================================================
-// 3. جلب الشموع البيانية
-// ==========================================================
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const toBybitInterval = (interval: string): string => {
-  if (interval === '1h') return '60';
-  if (interval === '4h') return '240';
-  return interval;
-};
-
-const toOkxInterval = (interval: string): string => {
-  if (interval === '1h') return '1H';
-  if (interval === '4h') return '4H';
-  return interval;
-};
-
-const fetchCandlesFromBybit = async (symbol: string, interval: string, limit: number): Promise<CandleData[]> => {
-  const res = await axios.get('https://api.bybit.com/v5/market/kline', {
-    params: { category: 'spot', symbol, interval: toBybitInterval(interval), limit },
-    headers: { 'User-Agent': 'Mozilla/5.0' },
-    timeout: 8000,
-  });
-
-  if (!res.data.result?.list?.length) throw new Error('Bybit data empty');
-
-  return res.data.result.list
-    .map((c: any) => ({
-      openTime: parseInt(c[0]),
-      open: parseFloat(c[1]),
-      high: parseFloat(c[2]),
-      low: parseFloat(c[3]),
-      close: parseFloat(c[4]),
-      volume: parseFloat(c[5]),
-    }))
-    .reverse();
-};
-
-const fetchCandlesFromOkx = async (symbol: string, interval: string, limit: number): Promise<CandleData[]> => {
-  const okxSymbol = symbol.replace('USDT', '') + '-USDT';
-  const res = await axios.get('https://www.okx.com/api/v5/market/candles', {
-    params: { instId: okxSymbol, bar: toOkxInterval(interval), limit },
-    headers: { 'User-Agent': 'Mozilla/5.0' },
-    timeout: 8000,
-  });
-
-  if (!res.data?.data?.length) throw new Error('OKX data empty');
-
-  return res.data.data
-    .map((c: any) => ({
-      openTime: parseInt(c[0]),
-      open: parseFloat(c[1]),
-      high: parseFloat(c[2]),
-      low: parseFloat(c[3]),
-      close: parseFloat(c[4]),
-      volume: parseFloat(c[5]),
-    }))
-    .reverse();
-};
-
-const fetchCandles = async (symbol: string, interval = '1h', limit = 100): Promise<CandleData[]> => {
-  try {
-    return await fetchCandlesFromBybit(symbol, interval, limit);
-  } catch {
-    try {
-      return await fetchCandlesFromOkx(symbol, interval, limit);
-    } catch {
-      return [];
-    }
-  }
-};
-
-// ==========================================================
-// 4. أدوات التحليل المؤسسي
-// ==========================================================
-interface SwingPoint {
-  index: number;
-  price: number;
-  type: 'HIGH' | 'LOW';
+interface Candle {
+  openTime: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
 }
 
-interface FVG {
-  startIndex: number;
-  top: number;
-  bottom: number;
-  type: 'BULLISH' | 'BEARISH';
-}
-
-const findSwings = (candles: CandleData[], leftRight = 2): SwingPoint[] => {
-  const swings: SwingPoint[] = [];
-  for (let i = leftRight; i < candles.length - leftRight; i++) {
-    const isHigh = candles.slice(i - leftRight, i + leftRight + 1).every((c, idx) => idx === leftRight || c.high <= candles[i].high);
-    const isLow = candles.slice(i - leftRight, i + leftRight + 1).every((c, idx) => idx === leftRight || c.low >= candles[i].low);
-
-    if (isHigh) swings.push({ index: i, price: candles[i].high, type: 'HIGH' });
-    if (isLow) swings.push({ index: i, price: candles[i].low, type: 'LOW' });
-  }
-  return swings;
+// جلب الشموع من بينانس
+const fetchKlines = async (symbol: string, interval: string, limit: number = 100): Promise<Candle[]> => {
+  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+  const res = await axios.get(url, { timeout: 10000 });
+  return res.data.map((c: any) => ({
+    openTime: c[0],
+    open: parseFloat(c[1]),
+    high: parseFloat(c[2]),
+    low: parseFloat(c[3]),
+    close: parseFloat(c[4]),
+    volume: parseFloat(c[5]),
+  }));
 };
 
-const detectFVGs = (candles: CandleData[], startIdx: number, endIdx: number): FVG[] => {
-  const fvgs: FVG[] = [];
-  for (let i = startIdx; i < endIdx - 2; i++) {
-    const c1 = candles[i];
-    const c3 = candles[i + 2];
+// فحص استراتيجية ICT للعملات السريعة (شراء فقط)
+const analyzeHighVolICT = (candles: Candle[]): any | null => {
+  if (candles.length < 30) return null;
 
-    if (c1.high < c3.low) {
-      fvgs.push({ startIndex: i, top: c3.low, bottom: c1.high, type: 'BULLISH' });
+  const current = candles[candles.length - 1];
+  const recent = candles.slice(-25);
+
+  // 1. تحديد قاع السحب الأخير (Liquidity Sweep)
+  const lowestLow = Math.min(...recent.map(c => c.low));
+  const lowestIdx = recent.findIndex(c => c.low === lowestLow);
+
+  if (lowestIdx < 2 || lowestIdx > recent.length - 3) return null;
+
+  // 2. التحقق من كسر الهيكل الصاعد (True Bullish MSS)
+  const priorHigh = Math.max(...recent.slice(0, lowestIdx).map(c => c.high));
+  const hasBrokenMSS = recent.slice(lowestIdx).some(c => c.close > priorHigh);
+
+  if (!hasBrokenMSS) return null;
+
+  // 3. البحث عن فجوة سعرية صاعدة (Bullish FVG)
+  let fvgFound = false;
+  let fvgMin = 0;
+  let fvgMax = 0;
+
+  for (let i = candles.length - 6; i < candles.length - 1; i++) {
+    if (i < 2) continue;
+    const c1 = candles[i - 2];
+    const c3 = candles[i];
+    if (c3.low > c1.high) {
+      fvgFound = true;
+      fvgMin = c1.high;
+      fvgMax = c3.low;
+      break;
     }
   }
-  return fvgs;
+
+  if (!fvgFound) return null;
+
+  // إعداد مستويات الصفقة
+  const entryMin = fvgMin;
+  const entryMax = fvgMax;
+  const stopLoss = lowestLow * 0.995; // تحت قاع السحب
+  const risk = (entryMax - stopLoss);
+
+  if (risk <= 0) return null;
+
+  const tp1 = entryMax + (risk * 1.5);
+  const tp2 = entryMax + (risk * 2.5);
+  const tp3 = entryMax + (risk * 3.5);
+
+  return {
+    type: 'BUY',
+    entryZone: { min: entryMin, max: entryMax },
+    stopLoss: Number(stopLoss.toFixed(6)),
+    targets: {
+      tp1: Number(tp1.toFixed(6)),
+      tp2: Number(tp2.toFixed(6)),
+      tp3: Number(tp3.toFixed(6))
+    },
+    riskRewardRatio: '1:2.5',
+    score: 95
+  };
 };
 
-// ==========================================================
-// 5. خوارزمية تحليل ICT الذكية (شراء فقط - Buy Only)
-// ==========================================================
-export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe: string) => {
-  if (candles.length < 50) return null;
-
-  const swings = findSwings(candles, 2);
-  if (swings.length < 5) return null;
-
-  const currentPrice = candles[candles.length - 1].close;
-  const baseAsset = symbol.replace('USDT', '');
-  
-  const recentSwings = swings.slice(-15);
-
-  for (let i = recentSwings.length - 1; i >= 2; i--) {
-    const sweepNode = recentSwings[i];
-
-    // نموذج الشراء الصاعد فقط (Bullish ICT)
-    if (sweepNode.type === 'LOW') {
-      let prevLow = null;
-      let mssHigh = null;
-
-      for (let j = i - 1; j >= 0; j--) {
-        if (recentSwings[j].type === 'LOW' && sweepNode.price < recentSwings[j].price) {
-          prevLow = recentSwings[j];
-          let maxPrice = -Infinity;
-          for (let k = j; k <= i; k++) {
-            if (recentSwings[k].type === 'HIGH' && recentSwings[k].price > maxPrice) {
-              maxPrice = recentSwings[k].price;
-              mssHigh = recentSwings[k];
-            }
-          }
-          break; 
-        }
-      }
-
-      if (prevLow && mssHigh) {
-        let mssIdx = -1;
-        let highestAfterMSS = sweepNode.price;
-
-        for (let c = sweepNode.index + 1; c < candles.length - 1; c++) {
-          if (candles[c].high > highestAfterMSS) highestAfterMSS = candles[c].high;
-          if (mssIdx === -1 && candles[c].close > mssHigh.price) {
-            mssIdx = c;
-          }
-        }
-
-        if (mssIdx !== -1 && (candles.length - mssIdx <= 30)) {
-          const impulseLow = sweepNode.price;
-          const equilibrium = impulseLow + (highestAfterMSS - impulseLow) * 0.5;
-
-          const fvgs = detectFVGs(candles, sweepNode.index, mssIdx);
-          const validFVG = fvgs.reverse().find(f => {
-            if (f.type !== 'BULLISH' || f.top > equilibrium) return false;
-            let closed = false;
-            for(let m = f.startIndex + 2; m < candles.length - 1; m++) {
-              if (candles[m].low < f.bottom) closed = true;
-            }
-            return !closed;
-          });
-
-          if (validFVG) {
-            if (currentPrice <= equilibrium && currentPrice > validFVG.bottom * 0.998) {
-              const entryPrice = validFVG.top;
-              const stopLoss = parseFloat((impulseLow * 0.997).toFixed(6));
-              const risk = entryPrice - stopLoss;
-              
-              if (risk > 0) {
-                const rawTp1 = parseFloat((entryPrice + risk * 1.5).toFixed(6));
-                const rawTp2 = parseFloat(mssHigh.price.toFixed(6));
-                const rawTp3 = parseFloat((entryPrice + risk * 3.0).toFixed(6));
-                const sortedTargets = [rawTp1, rawTp2, rawTp3].sort((a, b) => a - b);
-                
-                return {
-                  opportunity: {
-                    symbol, baseAsset, market: 'crypto' as const, timeframe,
-                    type: 'SPOT_BUY' as const, currentPrice,
-                    entryZone: { min: parseFloat(validFVG.bottom.toFixed(6)), max: parseFloat(validFVG.top.toFixed(6)) },
-                    stopLoss, targets: { tp1: sortedTargets[0], tp2: sortedTargets[1], tp3: sortedTargets[2] },
-                    riskRewardRatio: '1:3.0', confluenceScore: 98,
-                    fulfilledConditions: [
-                      { title: 'Liquidity Sweep', description: `سحب سيولة القاع $${prevLow.price}` },
-                      { title: 'True MSS', description: `كسر حقيقي للهيكل فوق $${mssHigh.price}` },
-                      { title: 'Fresh Discount FVG', description: `عودة السعر لاختبار فجوة غير مستهلكة` },
-                    ],
-                    analysisReasons: { entryReason: `شراء من FVG مثالية.`, stopLossReason: `وقف أسفل قاع السحب $${stopLoss}.`, takeProfitReason: `TP1: $${sortedTargets[0]} | TP2: $${sortedTargets[1]}` },
-                    status: 'ACTIVE' as const,
-                  },
-                  chartOptions: { symbol, timeframe, entry: entryPrice, stopLoss, tp1: sortedTargets[0], tp2: sortedTargets[1], tp3: sortedTargets[2], fvgTop: validFVG.top, fvgBottom: validFVG.bottom },
-                };
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-  return null;
-};
-
-// ==========================================
-// 6. تشغيل المسح الدوري الشامل
-// ==========================================
+// دالة التشغيل الرئيسية للفاحص
 export const runHighVolCryptoScan = async () => {
-  const targetTimeframes = ['1h', '4h'];
-  console.log('🚀 [High Vol Scanner] بدء دورة الفحص لفرص الشراء فقط...');
+  console.log(`⚡ [HighVol Scanner] بدء فحص ${HIGH_VOL_PAIRS.length} زوج من العملات عالية التقلب (1h, 4h)...`);
+  const timeframes = ['1h', '4h'];
+  let detectedCount = 0;
 
-  let symbols: string[] = [];
-  try {
-    symbols = await getActiveUSDTSpotPairs();
-    console.log(`🔍 تم تثبيت ${symbols.length} زوج من عملات الحركة السريعة.`);
-  } catch (error) {
-    return;
-  }
-
-  let discoveredCount = 0;
-  const MIN_VOLATILITY_PERCENT = 4.0;
-
-  for (const symbol of symbols) {
-    for (const tf of targetTimeframes) {
+  for (const symbol of HIGH_VOL_PAIRS) {
+    for (const tf of timeframes) {
       try {
-        const candles = await fetchCandles(symbol, tf, 100);
-        if (candles.length < 40) continue;
+        const candles = await fetchKlines(symbol, tf, 80);
+        const analysis = analyzeHighVolICT(candles);
 
-        const atrp = calculateATRP(candles, 14);
-        if (atrp < MIN_VOLATILITY_PERCENT) {
-          continue; 
-        }
-
-        const result = analyzeICTSetup(candles, symbol, tf);
-
-        if (result) {
+        if (analysis) {
+          // منع تكرار نفس الصفقة
           const existing = await Opportunity.findOne({
             symbol,
             timeframe: tf,
-            status: 'ACTIVE',
-            createdAt: { $gte: new Date(Date.now() - 4 * 60 * 60 * 1000) },
+            market: 'crypto',
+            status: 'active',
+            createdAt: { $gte: new Date(Date.now() - 6 * 60 * 60 * 1000) }
           });
 
-          if (!existing) {
-            const createdOpp = await Opportunity.create(result.opportunity);
-            discoveredCount++;
-            console.log(`🎯 [فرصة شراء سريعة رُصدت]: ${symbol} [${tf}] - ATRP: ${atrp}%`);
+          if (existing) continue;
 
-            const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
+          const oppData = {
+            symbol,
+            market: 'crypto',
+            timeframe: tf,
+            type: analysis.type,
+            entryZone: analysis.entryZone,
+            stopLoss: analysis.stopLoss,
+            targets: analysis.targets,
+            riskRewardRatio: analysis.riskRewardRatio,
+            score: analysis.score,
+            status: 'active',
+            createdAt: new Date()
+          };
 
-            sendOpportunityToTelegram(createdOpp, chartBuffer).catch((err) => {
-              console.error(`⚠️ خطأ إرسال التلغرام لـ ${symbol}:`, err.message);
+          // حفظ في قاعدة البيانات
+          const savedOpp = await Opportunity.create(oppData);
+
+          // توليد الشارت
+          let chartBuffer: Buffer | undefined;
+          try {
+            chartBuffer = await generateChartPngBuffer({
+              symbol,
+              timeframe: tf,
+              candles,
+              entryZone: analysis.entryZone,
+              stopLoss: analysis.stopLoss,
+              targets: analysis.targets,
+              fvgZone: analysis.entryZone,
+              sweepPrice: analysis.stopLoss
             });
+          } catch (chartErr: any) {
+            console.warn(`⚠️ تعذر توليد الشارت لـ ${symbol}:`, chartErr.message);
           }
+
+          // الإرسال إلى قناة التليجرام الجديدة
+          await sendHighVolOpportunityToTelegram(savedOpp, chartBuffer);
+          detectedCount++;
         }
-      } catch (error) {
-        // Continue loop
+
+        // فاصل زمني صغير لحماية API الذاكرة والاتصال
+        await new Promise(r => setTimeout(r, 150));
+      } catch (err: any) {
+        // تجاهل أخطاء الأزواج غير المتوفرة مؤقتاً
       }
-      await sleep(150);
     }
   }
 
-  console.log(`✨ [High Vol Scanner] اكتمل الفحص: رُصدت ${discoveredCount} فرصة شراء سريعة.`);
+  console.log(`✨ [HighVol Scanner] اكتمل فحص العملات السريعة. رُصدت ${detectedCount} فرصة جديدة.`);
 };
