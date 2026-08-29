@@ -1,11 +1,11 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import axios from 'axios';
 import { connectDB } from './config/db';
 import { initTelegramBot } from './services/telegramBot';
 import { initOpportunityScheduler } from './services/scheduler';
 import { initTradeTracker } from './services/tradeTracker';
-import { sendOpportunityToTelegram } from './services/telegramHighVolBot';
 
 // تحميل متغيرات البيئة
 dotenv.config();
@@ -26,59 +26,46 @@ app.get('/health', (req: Request, res: Response) => {
   res.json({ status: 'OK', timestamp: new Date() });
 });
 
-// مسار اختباري لإرسال صفقة وهمية فوراً لقناة التليجرام
+// مسار اختباري يرسل رسالة فورية ومباشرة عبر Telegram API
 app.get('/test-opportunity', async (req: Request, res: Response) => {
   try {
-    const mockOpportunity = {
-      symbol: 'TESTUSDT',
-      market: 'crypto',
-      timeframe: '1h',
-      type: 'SPOT_BUY',
-      currentPrice: 150.25,
-      entryZone: { min: 148.0, max: 150.0 },
-      stopLoss: 142.0,
-      targets: { tp1: 158.0, tp2: 165.0, tp3: 175.0 },
-      riskRewardRatio: '1:3.0',
-      confluenceScore: 99,
-      fulfilledConditions: [
-        { title: 'Liquidity Sweep', description: 'اختبار سحب السيولة الوهمي' },
-        { title: 'Test MSS', description: 'اختبار كسر الهيكل التجريبي' }
-      ],
-      analysisReasons: {
-        entryReason: 'هذه صفقة اختبارية للتأكد من ربط القناة بنجاح.',
-        stopLossReason: 'وقف خسارة تجريبي.',
-        takeProfitReason: 'الأهداف التجريبية.'
-      },
-      status: 'ACTIVE'
-    };
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const chatId = process.env.TELEGRAM_CHANNEL_ID;
 
-    // صورة شفافة 1x1 تجريبية في حال كانت الدالة تطلب Buffer للصورة
-    const dummyChartBuffer = Buffer.from(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-      'base64'
-    );
+    if (!token || !chatId) {
+      return res.status(400).json({ success: false, error: 'Telegram credentials missing in .env' });
+    }
 
-    // إرسال الصفقة التجريبية
-    await sendOpportunityToTelegram(mockOpportunity as any, dummyChartBuffer as any);
+    const testMessage = `🧪 *رسالة اختبارية من SmartZone AI*\n\n` +
+      `✅ تم التحقق من اتصال السيرفر بنجاح!\n` +
+      `🔹 *العملة التجريبية:* #TESTUSDT\n` +
+      `🔹 *نوع الصفقة:* SPOT BUY\n` +
+      `🔹 *سعر الدخول:* $150.25\n` +
+      `🔹 *الهدف الأول:* $158.00\n` +
+      `🔹 *وقف الخسارة:* $142.00\n\n` +
+      `⚡ البوت يعمل وجاهز لإرسال الفرص الحية.`;
 
-    res.status(200).json({ success: true, message: '✅ تم إرسال صفقة الاختبار إلى التليجرام بنجاح!' });
+    const url = `https://api.telegram.org/bot${token}/sendMessage`;
+    await axios.post(url, {
+      chat_id: chatId,
+      text: testMessage,
+      parse_mode: 'Markdown'
+    });
+
+    res.status(200).json({ success: true, message: '✅ تم إرسال الرسالة الاختبارية إلى القناة بنجاح!' });
   } catch (error: any) {
-    console.error('❌ خطأ في إرسال صفقة الاختبار:', error.message);
-    res.status(500).json({ success: false, error: error.message });
+    console.error('❌ خطأ في إرسال الاختبار:', error.response?.data || error.message);
+    res.status(500).json({ success: false, error: error.response?.data || error.message });
   }
 });
 
 // بدء التشغيل
 const startServer = async () => {
   try {
-    // 1. الاتصال بقاعدة البيانات أولاً
     await connectDB();
 
-    // 2. تشغيل السيرفر
     app.listen(PORT, () => {
       console.log(`📡 Server is running on port: ${PORT}`);
-
-      // 3. تشغيل البوت والماسح الذكي ومتتبع الصفقات في الخلفية
       initTelegramBot();
       initOpportunityScheduler();
       initTradeTracker();
