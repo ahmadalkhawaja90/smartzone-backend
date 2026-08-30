@@ -134,7 +134,7 @@ interface FVG {
   startIndex: number;
   top: number;
   bottom: number;
-  type: 'BULLISH' | 'BEARISH';
+  type: 'BULLISH';
 }
 
 const findSwings = (candles: CandleData[], leftRight = 2): SwingPoint[] => {
@@ -157,15 +157,13 @@ const detectFVGs = (candles: CandleData[], startIdx: number, endIdx: number): FV
 
     if (c1.high < c3.low) {
       fvgs.push({ startIndex: i, top: c3.low, bottom: c1.high, type: 'BULLISH' });
-    } else if (c1.low > c3.high) {
-      fvgs.push({ startIndex: i, top: c1.low, bottom: c3.high, type: 'BEARISH' });
     }
   }
   return fvgs;
 };
 
 // ==========================================================
-// 4. خوارزمية تحليل ICT الذكية (بحث مرن)
+// 4. خوارزمية تحليل ICT الذكية (بحث مرن للشراء فقط)
 // ==========================================================
 export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe: string) => {
   if (candles.length < 50) return null;
@@ -280,99 +278,6 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
         }
       }
     }
-
-    // ==========================================
-    // ب) نموذج البيع الهابط (Bearish ICT)
-    // ==========================================
-    if (sweepNode.type === 'HIGH') {
-      let prevHigh = null;
-      let mssLow = null;
-
-      for (let j = i - 1; j >= 0; j--) {
-        if (recentSwings[j].type === 'HIGH' && sweepNode.price > recentSwings[j].price) {
-          prevHigh = recentSwings[j];
-          let minPrice = Infinity;
-          for (let k = j; k <= i; k++) {
-            if (recentSwings[k].type === 'LOW' && recentSwings[k].price < minPrice) {
-              minPrice = recentSwings[k].price;
-              mssLow = recentSwings[k];
-            }
-          }
-          break; 
-        }
-      }
-
-      if (prevHigh && mssLow) {
-        let mssIdx = -1;
-        let lowestAfterMSS = sweepNode.price;
-
-        for (let c = sweepNode.index + 1; c < candles.length - 1; c++) {
-          if (candles[c].low < lowestAfterMSS) lowestAfterMSS = candles[c].low;
-          if (mssIdx === -1 && candles[c].close < mssLow.price) {
-            mssIdx = c;
-          }
-        }
-
-        if (mssIdx !== -1 && (candles.length - mssIdx <= 30)) {
-          const impulseHigh = sweepNode.price;
-          const equilibrium = impulseHigh - (impulseHigh - lowestAfterMSS) * 0.5;
-
-          const fvgs = detectFVGs(candles, sweepNode.index, mssIdx);
-          const validFVG = fvgs.reverse().find(f => {
-            if (f.type !== 'BEARISH' || f.bottom < equilibrium) return false;
-            
-            let closed = false;
-            for(let m = f.startIndex + 2; m < candles.length - 1; m++) {
-              if (candles[m].high > f.top) closed = true;
-            }
-            return !closed;
-          });
-
-          if (validFVG) {
-            if (currentPrice >= equilibrium && currentPrice < validFVG.top * 1.002) {
-              const entryPrice = validFVG.bottom;
-              const stopLoss = parseFloat((impulseHigh * 1.003).toFixed(6));
-              const risk = stopLoss - entryPrice;
-              
-              if (risk > 0) {
-                // حساب الأهداف الخام
-                const rawTp1 = parseFloat((entryPrice - risk * 1.5).toFixed(6));
-                const rawTp2 = parseFloat(mssLow.price.toFixed(6));
-                const rawTp3 = parseFloat((entryPrice - risk * 3.0).toFixed(6));
-
-                // ترتيب الأهداف تنازلياً (للبيع)
-                const sortedTargets = [rawTp1, rawTp2, rawTp3].sort((a, b) => b - a);
-                const tp1 = sortedTargets[0];
-                const tp2 = sortedTargets[1];
-                const tp3 = sortedTargets[2];
-
-                return {
-                  opportunity: {
-                    symbol, baseAsset, market: 'crypto' as const, timeframe,
-                    type: 'SELL' as const, currentPrice,
-                    entryZone: { min: parseFloat(validFVG.bottom.toFixed(6)), max: parseFloat(validFVG.top.toFixed(6)) },
-                    stopLoss, targets: { tp1, tp2, tp3 },
-                    riskRewardRatio: '1:3.0', confluenceScore: 98,
-                    fulfilledConditions: [
-                      { title: 'Liquidity Sweep', description: `سحب سيولة القمة $${prevHigh.price}` },
-                      { title: 'True MSS', description: `كسر حقيقي للهيكل أسفل $${mssLow.price}` },
-                      { title: 'Fresh Premium FVG', description: `عودة السعر لاختبار فجوة بيعية` },
-                    ],
-                    analysisReasons: {
-                      entryReason: `بيع من FVG مثالية.`,
-                      stopLossReason: `وقف أعلى قمة السحب $${stopLoss}.`,
-                      takeProfitReason: `TP1: $${tp1} | TP2: $${tp2}`
-                    },
-                    status: 'ACTIVE' as const,
-                  },
-                  chartOptions: { symbol, timeframe, entry: entryPrice, stopLoss, tp1, tp2, tp3, fvgTop: validFVG.top, fvgBottom: validFVG.bottom },
-                };
-              }
-            }
-          }
-        }
-      }
-    }
   }
   return null;
 };
@@ -417,7 +322,7 @@ export const runFullCryptoScan = async () => {
 
             const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
 
-            sendOpportunityToTelegram(createdOpp, chartBuffer).catch((err) => {
+            sendOpportunityToTelegram(createdOpp, chartBuffer).catch((err: any) => {
               console.error(`⚠️ خطأ إرسال التلغرام لـ ${symbol}:`, err.message);
             });
           }
