@@ -28,7 +28,23 @@ export interface IOpportunity extends Document {
     stopLossReason: string;
     takeProfitReason: string;
   };
-  status: 'ACTIVE' | 'HIT_TP1' | 'HIT_TP2' | 'HIT_TP3' | 'HIT_SL' | 'EXPIRED';
+  // الحالات المحدثة لتشمل دورة حياة الأمر والتأمين
+  status:
+    | 'PENDING_ENTRY'
+    | 'ACTIVE'
+    | 'BREAK_EVEN'
+    | 'HIT_TP1'
+    | 'HIT_TP2'
+    | 'HIT_TP3'
+    | 'HIT_SL'
+    | 'CLOSED_BE'
+    | 'EXPIRED'
+    | 'CANCELLED';
+  
+  // حقول التتبع الخاصة بمنصة باينانس
+  orderId?: string;
+  entryOrderType?: 'LIMIT' | 'MARKET';
+  currentStopLoss?: number;
   profitPercentage?: number;
   closedAt?: Date;
   createdAt: Date;
@@ -68,9 +84,23 @@ const OpportunitySchema = new Schema<IOpportunity>(
     },
     status: {
       type: String,
-      enum: ['ACTIVE', 'HIT_TP1', 'HIT_TP2', 'HIT_TP3', 'HIT_SL', 'EXPIRED'],
-      default: 'ACTIVE',
+      enum: [
+        'PENDING_ENTRY',
+        'ACTIVE',
+        'BREAK_EVEN',
+        'HIT_TP1',
+        'HIT_TP2',
+        'HIT_TP3',
+        'HIT_SL',
+        'CLOSED_BE',
+        'EXPIRED',
+        'CANCELLED',
+      ],
+      default: 'PENDING_ENTRY',
     },
+    orderId: { type: String, default: null },
+    entryOrderType: { type: String, enum: ['LIMIT', 'MARKET'], default: 'LIMIT' },
+    currentStopLoss: { type: Number, default: null },
     profitPercentage: { type: Number, default: 0 },
     closedAt: { type: Date, default: null },
   },
