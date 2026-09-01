@@ -122,9 +122,9 @@ const fetchCandles = async (symbol: string, interval = '1h', limit = 100): Promi
   }
 };
 
-// ==========================================================
+// ==========================================
 // 3. أدوات التحليل المؤسسي
-// ==========================================================
+// ==========================================
 interface SwingPoint {
   index: number;
   price: number;
@@ -163,9 +163,9 @@ const detectFVGs = (candles: CandleData[], startIdx: number, endIdx: number): FV
   return fvgs;
 };
 
-// ==========================================================
+// ==========================================
 // 4. خوارزمية تحليل ICT الذكية (بحث مرن للشراء فقط)
-// ==========================================================
+// ==========================================
 export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe: string) => {
   if (candles.length < 50) return null;
 
@@ -209,7 +209,8 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
           }
         }
 
-        if (mssIdx !== -1 && (candles.length - mssIdx <= 30)) {
+        // تم التعديل هنا: فحص الشموع الحالية فقط (آخر 3 شموع كحد أقصى)
+        if (mssIdx !== -1 && (candles.length - 1 - mssIdx <= 3)) {
           const impulseLow = sweepNode.price;
           const equilibrium = impulseLow + (highestAfterMSS - impulseLow) * 0.5;
 
