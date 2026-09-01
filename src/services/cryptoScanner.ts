@@ -2,6 +2,7 @@ import axios from 'axios';
 import { Opportunity } from '../models/Opportunity';
 import { sendOpportunityToTelegram } from './telegramBot';
 import { generateChartPngBuffer, CandlePlotData } from './chartGenerator';
+import { placeLimitBuyOrder } from './binanceClient';
 
 export interface CandleData {
   openTime: number;
@@ -174,21 +175,15 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
   const currentPrice = candles[candles.length - 1].close;
   const baseAsset = symbol.replace('USDT', '');
   
-  // نأخذ آخر 15 قمة وقاع للبحث المرن
   const recentSwings = swings.slice(-15);
 
-  // نبحث من الأحدث للأقدم لالتقاط الفرص الحالية
   for (let i = recentSwings.length - 1; i >= 2; i--) {
     const sweepNode = recentSwings[i];
 
-    // ==========================================
-    // أ) نموذج الشراء الصاعد (Bullish ICT)
-    // ==========================================
     if (sweepNode.type === 'LOW') {
       let prevLow = null;
       let mssHigh = null;
 
-      // 1. إيجاد القاع المستهدف والقمة بينهما
       for (let j = i - 1; j >= 0; j--) {
         if (recentSwings[j].type === 'LOW' && sweepNode.price < recentSwings[j].price) {
           prevLow = recentSwings[j];
@@ -207,7 +202,6 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
         let mssIdx = -1;
         let highestAfterMSS = sweepNode.price;
 
-        // 2. التحقق من كسر الهيكل (MSS)
         for (let c = sweepNode.index + 1; c < candles.length - 1; c++) {
           if (candles[c].high > highestAfterMSS) highestAfterMSS = candles[c].high;
           if (mssIdx === -1 && candles[c].close > mssHigh.price) {
@@ -215,7 +209,6 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
           }
         }
 
-        // 3. التحقق من التوقيت والـ FVG
         if (mssIdx !== -1 && (candles.length - mssIdx <= 30)) {
           const impulseLow = sweepNode.price;
           const equilibrium = impulseLow + (highestAfterMSS - impulseLow) * 0.5;
@@ -224,7 +217,6 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
           const validFVG = fvgs.reverse().find(f => {
             if (f.type !== 'BULLISH' || f.top > equilibrium) return false;
             
-            // التأكد أن الفجوة لم تُغلق بعد تشكلها
             let closed = false;
             for (let m = f.startIndex + 2; m < candles.length - 1; m++) {
               if (candles[m].low < f.bottom) closed = true;
@@ -233,26 +225,21 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
           });
 
           if (validFVG) {
-            // 4. زناد الدخول: السعر عاد لمنطقة الخصم واقترب من الـ FVG
             if (currentPrice <= equilibrium && currentPrice > validFVG.bottom * 0.998) {
               const entryPrice = validFVG.top;
               const stopLoss = parseFloat((impulseLow * 0.997).toFixed(6));
               const risk = entryPrice - stopLoss;
               
               if (risk > 0) {
-                // 🎯 1. حساب مدى موجة الانطلاق (Impulse Leg)
                 const impulseRange = highestAfterMSS - impulseLow;
 
-                // 🎯 2. الهدف الأول (TP1): قمة الهيكل السابقة BSL (مع فاصل أمان 1.0R كحد أدنى لتفعيل الـ Break-Even)
                 const minTp1 = entryPrice + risk * 1.0;
                 const tp1 = parseFloat(Math.max(mssHigh.price, minTp1).toFixed(6));
 
-                // 🎯 3. الهدف الثاني (TP2): امتداد فيبوناتشي 1.272 (مع فاصل أمان يمنع التقارب مع TP1)
                 const rawFibTp2 = impulseLow + impulseRange * 1.272;
                 const minTp2 = tp1 + risk * 0.8;
                 const tp2 = parseFloat(Math.max(rawFibTp2, minTp2).toFixed(6));
 
-                // 🎯 4. الهدف الثالث (TP3): امتداد فيبوناتشي 1.618 (الهدف الذهبي التوسعي)
                 const rawFibTp3 = impulseLow + impulseRange * 1.618;
                 const minTp3 = tp2 + risk * 1.0;
                 const tp3 = parseFloat(Math.max(rawFibTp3, minTp3).toFixed(6));
@@ -274,7 +261,7 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
                       stopLossReason: `وقف أسفل قاع السحب $${stopLoss}.`,
                       takeProfitReason: `TP1 (سيولة BSL): $${tp1} | TP2 (فيبو 1.272): $${tp2} | TP3 (فيبو 1.618): $${tp3}`
                     },
-                    status: 'ACTIVE' as const,
+                    status: 'PENDING_ENTRY' as const,
                   },
                   chartOptions: { symbol, timeframe, entry: entryPrice, stopLoss, tp1, tp2, tp3, fvgTop: validFVG.top, fvgBottom: validFVG.bottom },
                 };
@@ -289,7 +276,7 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
 };
 
 // ==========================================
-// 5. تشغيل المسح الدوري الشامل
+// 5. تشغيل المسح الدوري الشامل مع إرسال الأوامر المعلقة
 // ==========================================
 export const runFullCryptoScan = async () => {
   const targetTimeframes = ['1h', '4h'];
@@ -314,17 +301,32 @@ export const runFullCryptoScan = async () => {
         const result = analyzeICTSetup(candles, symbol, tf);
 
         if (result) {
+          // فحص منع التكرار: التأكد من عدم وجود صفقة نشطة أو معلقة لنفس العملة
           const existing = await Opportunity.findOne({
             symbol,
-            timeframe: tf,
-            status: 'ACTIVE',
-            createdAt: { $gte: new Date(Date.now() - 4 * 60 * 60 * 1000) },
+            status: { $in: ['PENDING_ENTRY', 'ACTIVE', 'BREAK_EVEN'] }
           });
 
           if (!existing) {
-            const createdOpp = await Opportunity.create(result.opportunity);
+            // إرسال أمر الشراء المحدد (Limit Order) لمنصة باينانس
+            const entryPrice = result.opportunity.entryZone.max;
+            const orderResult = await placeLimitBuyOrder(symbol, entryPrice);
+
+            let orderId: string | undefined = undefined;
+            if (orderResult.success && orderResult.orderId) {
+              orderId = orderResult.orderId;
+              console.log(`⚡ [Binance Testnet] تم وضع أمر شراء معلق لـ ${symbol} بسعر $${entryPrice} (Order ID: ${orderId})`);
+            } else {
+              console.warn(`⚠️ [Binance Testnet] لم يتم إرسال الطلب لـ ${symbol}: ${orderResult.error}`);
+            }
+
+            const createdOpp = await Opportunity.create({
+              ...result.opportunity,
+              orderId,
+            });
+
             discoveredCount++;
-            console.log(`🎯 [فرصة ICT رُصدت]: ${symbol} [${tf}] - ${result.opportunity.type}`);
+            console.log(`🎯 [فرصة ICT رُصدت]: ${symbol} [${tf}] - حالة الدخول: معلق`);
 
             const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
 
