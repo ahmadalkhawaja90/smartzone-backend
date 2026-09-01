@@ -3,7 +3,6 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { connectDB } from './config/db';
 import { initOpportunityScheduler } from './services/scheduler';
-import { initTradeTracker } from './services/tradeTracker';
 
 // تحميل متغيرات البيئة
 dotenv.config();
@@ -34,11 +33,8 @@ const startServer = async () => {
     app.listen(PORT, () => {
       console.log(`📡 Server is running on port: ${PORT}`);
 
-      // 3. تشغيل جدول الفحص الآلي (Crypto, High-Vol, Forex, Harmonics)
+      // 3. تشغيل جدول الفحص الآلي (Crypto & Harmonics)
       initOpportunityScheduler();
-
-      // 4. تشغيل متتبع الصفقات
-      initTradeTracker();
     });
   } catch (error) {
     console.error('❌ فشل بدء تشغيل السيرفر:', error);
