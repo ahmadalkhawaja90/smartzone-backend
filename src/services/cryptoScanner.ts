@@ -210,7 +210,7 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
         }
 
         // تم التعديل هنا: فحص الشموع الحالية فقط (آخر 3 شموع كحد أقصى)
-        if (mssIdx !== -1 && (candles.length - 1 - mssIdx <= 3)) {
+        if (mssIdx !== -1 && (candles.length - 1 - mssIdx <= 10)) {
           const impulseLow = sweepNode.price;
           const equilibrium = impulseLow + (highestAfterMSS - impulseLow) * 0.5;
 
