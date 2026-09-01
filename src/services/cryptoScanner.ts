@@ -226,7 +226,7 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
             
             // التأكد أن الفجوة لم تُغلق بعد تشكلها
             let closed = false;
-            for(let m = f.startIndex + 2; m < candles.length - 1; m++) {
+            for (let m = f.startIndex + 2; m < candles.length - 1; m++) {
               if (candles[m].low < f.bottom) closed = true;
             }
             return !closed;
@@ -240,16 +240,22 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
               const risk = entryPrice - stopLoss;
               
               if (risk > 0) {
-                // حساب الأهداف الخام
-                const rawTp1 = parseFloat((entryPrice + risk * 1.5).toFixed(6));
-                const rawTp2 = parseFloat(mssHigh.price.toFixed(6));
-                const rawTp3 = parseFloat((entryPrice + risk * 3.0).toFixed(6));
+                // 🎯 1. حساب مدى موجة الانطلاق (Impulse Leg)
+                const impulseRange = highestAfterMSS - impulseLow;
 
-                // ترتيب الأهداف تصاعدياً (للشراء)
-                const sortedTargets = [rawTp1, rawTp2, rawTp3].sort((a, b) => a - b);
-                const tp1 = sortedTargets[0];
-                const tp2 = sortedTargets[1];
-                const tp3 = sortedTargets[2];
+                // 🎯 2. الهدف الأول (TP1): قمة الهيكل السابقة BSL (مع فاصل أمان 1.0R كحد أدنى لتفعيل الـ Break-Even)
+                const minTp1 = entryPrice + risk * 1.0;
+                const tp1 = parseFloat(Math.max(mssHigh.price, minTp1).toFixed(6));
+
+                // 🎯 3. الهدف الثاني (TP2): امتداد فيبوناتشي 1.272 (مع فاصل أمان يمنع التقارب مع TP1)
+                const rawFibTp2 = impulseLow + impulseRange * 1.272;
+                const minTp2 = tp1 + risk * 0.8;
+                const tp2 = parseFloat(Math.max(rawFibTp2, minTp2).toFixed(6));
+
+                // 🎯 4. الهدف الثالث (TP3): امتداد فيبوناتشي 1.618 (الهدف الذهبي التوسعي)
+                const rawFibTp3 = impulseLow + impulseRange * 1.618;
+                const minTp3 = tp2 + risk * 1.0;
+                const tp3 = parseFloat(Math.max(rawFibTp3, minTp3).toFixed(6));
 
                 return {
                   opportunity: {
@@ -264,9 +270,9 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
                       { title: 'Fresh Discount FVG', description: `عودة السعر لاختبار فجوة غير مستهلكة` },
                     ],
                     analysisReasons: {
-                      entryReason: `شراء من FVG مثالية.`,
+                      entryReason: `شراء من FVG مثالية في منطقة الخصم.`,
                       stopLossReason: `وقف أسفل قاع السحب $${stopLoss}.`,
-                      takeProfitReason: `TP1: $${tp1} | TP2: $${tp2}`
+                      takeProfitReason: `TP1 (سيولة BSL): $${tp1} | TP2 (فيبو 1.272): $${tp2} | TP3 (فيبو 1.618): $${tp3}`
                     },
                     status: 'ACTIVE' as const,
                   },
