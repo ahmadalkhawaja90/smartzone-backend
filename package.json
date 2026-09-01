@@ -2,10 +2,12 @@
   "name": "backend",
   "version": "1.0.0",
   "description": "",
-  "main": "src/server.ts",
+  "main": "dist/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "ts-node-dev --max-old-space-size=4096 --respawn --transpile-only src/server.ts"
+    "build": "tsc",
+    "start": "node --max-old-space-size=450 dist/server.js",
+    "dev": "ts-node-dev --max-old-space-size=4096 --respawn --transpile-only src/server.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
