@@ -63,9 +63,12 @@ const trackPendingOrders = async () => {
   }
 };
 
-// 2. مراقبة وإدارة الصفقات النشطة (SL, TP1, Break-Even)
+// 2. مراقبة وإدارة الصفقات النشطة (SL, TP1, Break-Even, Trailing SL, TP3)
 const trackActiveTrades = async () => {
-  const activeOpps = await Opportunity.find({ status: { $in: ['ACTIVE', 'BREAK_EVEN'] } });
+  // جلب كافة الصفقات النشطة بمختلف مراحلها
+  const activeOpps = await Opportunity.find({ 
+    status: { $in: ['ACTIVE', 'BREAK_EVEN', 'TP2_SECURED'] } 
+  });
 
   for (const opp of activeOpps) {
     try {
@@ -73,6 +76,8 @@ const trackActiveTrades = async () => {
       if (!currentPrice) continue;
 
       const entryPrice = opp.entryZone.max;
+      const allocatedCapital = 50; // القيمة المخصصة لكل صفقة (50$)
+      const totalQty = allocatedCapital / entryPrice;
 
       // ==========================================
       // أ) الصفقات بالحالة ACTIVE (قبل تأمين الدخول)
@@ -90,54 +95,77 @@ const trackActiveTrades = async () => {
           continue;
         }
 
-        // ضرب الهدف الأول (TP1) -> بيع 25% + نقل الوقف لنقطة الدخول
+        // ضرب الهدف الأول (TP1) -> إغلاق 50% ونقل الوقف لنقطة الدخول
         if (currentPrice >= opp.targets.tp1) {
-          const allocatedCapital = 10;
-          const totalQty = allocatedCapital / entryPrice;
-          const sellQty = totalQty * 0.25;
-
+          const sellQty = totalQty * 0.50; // بيع نصف الكمية (50%)
           await placeMarketSellOrder(opp.symbol, sellQty);
 
           const tp1ProfitPct = parseFloat((((opp.targets.tp1 - entryPrice) / entryPrice) * 100).toFixed(2));
           opp.status = 'BREAK_EVEN';
-          opp.currentStopLoss = entryPrice;
+          opp.currentStopLoss = entryPrice; // الوقف أصبح على الدخول
           opp.profitPercentage = tp1ProfitPct;
           await opp.save();
-          console.log(`🎯 [TP1 Hit & BE Secured] تأمين ${opp.symbol}`);
+          console.log(`🎯 [TP1 Hit & 50% Sold] تم بيع 50% وتأمين الدخول لـ ${opp.symbol}`);
           await sendTradeUpdateToTelegram('TP1', opp, tp1ProfitPct);
+          continue;
         }
       }
 
       // ==========================================
-      // ب) الصفقات بالحالة BREAK_EVEN (مؤمنة على الدخول)
+      // ب) الصفقات بالحالة BREAK_EVEN (مؤمنة بعد TP1)
       // ==========================================
       if (opp.status === 'BREAK_EVEN') {
-        // ارتداد السعر وضرب نقطة الدخول (خروج بدون خسارة)
+        // ارتداد السعر وضرب نقطة الدخول (خروج الـ 50% المتبقية دون خسارة)
         if (currentPrice <= entryPrice) {
           opp.status = 'CLOSED_BE';
           opp.closedAt = new Date();
           await opp.save();
-          console.log(`🛡️ [Closed at BE] خروج على الدخول لـ ${opp.symbol}`);
+          console.log(`🛡️ [Closed at BE] خروج المتبقي على الدخول لـ ${opp.symbol}`);
           await sendTradeUpdateToTelegram('BE', opp, 0);
           continue;
         }
 
-        // ضرب الهدف الثاني TP2
+        // ضرب الهدف الثاني TP2 -> نقل الوقف إلى TP1 لحجز مزيد من الأرباح
         if (currentPrice >= opp.targets.tp2) {
-          opp.status = 'HIT_TP2';
+          opp.status = 'TP2_SECURED';
+          opp.currentStopLoss = opp.targets.tp1; // رفع الوقف ليصبح عند الهدف الأول
           await opp.save();
-          console.log(`🔥 [TP2 Hit] هدف ثاني لـ ${opp.symbol}`);
+          console.log(`🔥 [TP2 Hit & Trailing Moved] تم رفع الوقف إلى TP1 لـ ${opp.symbol}`);
           await sendTradeUpdateToTelegram('TP2', opp);
+          continue;
+        }
+      }
+
+      // ==========================================
+      // ج) الصفقات بالحالة TP2_SECURED (الوقف عند TP1)
+      // ==========================================
+      if (opp.status === 'TP2_SECURED') {
+        // ارتداد السعر وضرب وقف TP1 المحجوز
+        if (currentPrice <= opp.targets.tp1) {
+          const remainingQty = totalQty * 0.50;
+          await placeMarketSellOrder(opp.symbol, remainingQty);
+
+          const securedProfitPct = parseFloat((((opp.targets.tp1 - entryPrice) / entryPrice) * 100).toFixed(2));
+          opp.status = 'CLOSED_TRAILING_TP1';
+          opp.profitPercentage = securedProfitPct;
+          opp.closedAt = new Date();
+          await opp.save();
+          console.log(`🔒 [Trailing SL Hit at TP1] تم إغلاق المتبقي على ربح TP1 لـ ${opp.symbol}`);
+          await sendTradeUpdateToTelegram('TRAILING_TP1', opp, securedProfitPct);
+          continue;
         }
 
-        // ضرب الهدف الثالث TP3 (الإغلاق الكامل للأرباح)
+        // ضرب الهدف الثالث TP3 (الإغلاق التام للـ 50% المتبقية)
         if (currentPrice >= opp.targets.tp3) {
+          const remainingQty = totalQty * 0.50;
+          await placeMarketSellOrder(opp.symbol, remainingQty);
+
           const tp3ProfitPct = parseFloat((((opp.targets.tp3 - entryPrice) / entryPrice) * 100).toFixed(2));
           opp.status = 'HIT_TP3';
           opp.profitPercentage = tp3ProfitPct;
           opp.closedAt = new Date();
           await opp.save();
-          console.log(`👑 [TP3 Hit] إغلاق كامل بربح لـ ${opp.symbol}`);
+          console.log(`👑 [TP3 Hit] إغلاق كامل الصفقة بنجاح تام لـ ${opp.symbol}`);
           await sendTradeUpdateToTelegram('TP3', opp, tp3ProfitPct);
         }
       }
