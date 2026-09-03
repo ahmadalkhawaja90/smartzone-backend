@@ -32,11 +32,11 @@ export const generateOneTimeInviteLink = async (): Promise<string | null> => {
 
 // دالة مساعدة لحساب الرصيد التراكمي وإحصائيات المحفظة من قاعدة البيانات
 export const calculatePortfolioMetrics = async () => {
-  const initialCapital = 100;
-  const riskPerTrade = 10; // 10$ لكل صفقة
+  const initialCapital = 500; // رأس المال الأساسي (500$)
+  const riskPerTrade = 50;     // 50$ لكل صفقة (10%)
 
   const closedTrades = await Opportunity.find({
-    status: { $in: ['HIT_TP1', 'HIT_TP2', 'HIT_TP3', 'HIT_SL', 'CLOSED_BE'] },
+    status: { $in: ['HIT_TP3', 'CLOSED_TRAILING_TP1', 'HIT_SL', 'CLOSED_BE'] },
   });
 
   let totalNetProfitUsdt = 0;
@@ -46,16 +46,27 @@ export const calculatePortfolioMetrics = async () => {
 
   for (const trade of closedTrades) {
     const pct = trade.profitPercentage || 0;
-    const profitUsdt = riskPerTrade * (pct / 100);
-    totalNetProfitUsdt += profitUsdt;
-
+    
+    // حساب الربح بالدولار بناءً على آلية الخروج
+    let profitUsdt = 0;
     if (trade.status === 'HIT_SL') {
+      profitUsdt = riskPerTrade * (pct / 100); // خسارة كامل الـ 50$ بالنسبة المحددة
       lossCount++;
     } else if (trade.status === 'CLOSED_BE') {
+      // تم بيع 50% عند TP1 والـ 50% الأخرى خرجت على الدخول 0%
+      profitUsdt = (riskPerTrade * 0.5) * (pct / 100);
       beCount++;
-    } else {
+    } else if (trade.status === 'CLOSED_TRAILING_TP1') {
+      // النصف الأول بيع عند TP1 والنصف الثاني بيع أيضاً عند TP1 كوقف متحرك
+      profitUsdt = riskPerTrade * (pct / 100);
+      winCount++;
+    } else if (trade.status === 'HIT_TP3') {
+      // حققت الهدف الثالث بالكامل
+      profitUsdt = riskPerTrade * (pct / 100);
       winCount++;
     }
+
+    totalNetProfitUsdt += profitUsdt;
   }
 
   const currentBalance = initialCapital + totalNetProfitUsdt;
@@ -89,7 +100,6 @@ export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer):
   try {
     const symbol = opp.symbol || 'ASSET';
     const timeframe = opp.timeframe || '1h';
-    const entryMin = opp.entryZone?.min ?? opp.currentPrice;
     const entryMax = opp.entryZone?.max ?? opp.currentPrice;
     const sl = opp.stopLoss ?? 0;
     
@@ -123,10 +133,10 @@ export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer):
 🎯 *أمر الدخول المعلق:* \`$${entryMax}\`
 🛑 *وقف الخسارة المحكم:* \`$${sl}\` ❌
 
-🏁 *المستويات المستهدفة:*
-  🔹 *الهدف 1:* \`$${tp1}\` 🎯 _(جني 25% + تأمين دخول)_
-  🔹 *الهدف 2:* \`$${tp2}\` 🚀 _(امتداد 1.272)_
-  ${tp3 ? `🔹 *الهدف 3:* \`$${tp3}\` 👑 _(امتداد 1.618)_` : ''}
+🏁 *المستويات المستهدفة وإدارة الصفقة:*
+  🔹 *الهدف 1:* \`$${tp1}\` 🎯 _(جني 50% + تأمين الدخول)_
+  🔹 *الهدف 2:* \`$${tp2}\` 🔥 _(رفع الوقف إلى TP1)_
+  ${tp3 ? `🔹 *الهدف 3:* \`$${tp3}\` 👑 _(خروج كامل 100%)_` : ''}
 ═════════════════════════
 📖 *السياق المؤسسي:*
 ${chartStory}
@@ -151,7 +161,7 @@ ${chartStory}
 
 // 3. إرسال إشعار لحظي عند تحديث حالة الصفقة والرصيد التراكمي
 export const sendTradeUpdateToTelegram = async (
-  event: 'FILLED' | 'TP1' | 'TP2' | 'TP3' | 'SL' | 'BE',
+  event: 'FILLED' | 'TP1' | 'TP2' | 'TP3' | 'SL' | 'BE' | 'TRAILING_TP1',
   opp: any,
   tradeProfitPct?: number
 ) => {
@@ -169,27 +179,37 @@ export const sendTradeUpdateToTelegram = async (
     switch (event) {
       case 'FILLED':
         title = `⚡ *تم تفعيل صفقة شراء جديدة*`;
-        details = `📍 تم شراء \`${symbol}\` عند: \`$${entryPrice}\`\n💼 حجم الصفقة: \`$10.00 (10%)\``;
+        details = `📍 تم شراء \`${symbol}\` عند: \`$${entryPrice}\`\n💼 حجم الصفقة: \`$50.00 (10%)\``;
         break;
+
       case 'TP1':
         title = `🎯 *تم تحقيق الهدف الأول (TP1)*`;
-        details = `💰 تم إغلاق \`25%\` من الصفقة بربح \`${sign}${tradeProfitPct}%\`\n🛡️ *تم نقل وقف الخسارة إلى نقطة الدخول ($${entryPrice}) - الصفقة في أمان تام.*`;
+        details = `💰 تم إغلاق \`50%\` من الصفقة بربح \`${sign}${tradeProfitPct}%\`\n🛡️ *تم نقل وقف الخسارة إلى نقطة الدخول ($${entryPrice}) - الصفقة في أمان تام.*`;
         break;
+
       case 'TP2':
-        title = `🔥 *تم تحقيق الهدف الثاني (TP2)*`;
-        details = `🚀 وصل السعر إلى الهدف الثاني \`$${opp.targets.tp2}\` لـ \`${symbol}\`.`;
+        title = `🔥 *تم تحقيق الهدف الثاني (TP2) وتأمين الأرباح*`;
+        details = `🚀 وصل السعر إلى الهدف الثاني \`$${opp.targets.tp2}\` لـ \`${symbol}\`.\n🔒 *تم رفع وقف الخسارة إلى الهدف الأول ($${opp.targets.tp1}) لحجز الأرباح.*\n🎯 ننتقل الآن لملاحقة الهدف الثالث (TP3).`;
         break;
+
+      case 'TRAILING_TP1':
+        title = `🔒 *إغلاق بربح محجوز (Trailing Exit)*`;
+        details = `🛡️ ارتد السعر بعد الهدف الثاني وتم إغلاق الـ 50% المتبقية عند الهدف الأول (\`$${opp.targets.tp1}\`).\n💵 تم الخروج بربح إضافي محقق: \`${sign}${tradeProfitPct}%\``;
+        break;
+
       case 'TP3':
         title = `👑 *تم إغلاق كامل الصفقة على الهدف الذهبي (TP3)*`;
-        details = `🎉 ربح الصفقة الإجمالي: \`${sign}${tradeProfitPct}%\`\n💵 تم الخروج بالكامل عند: \`$${opp.targets.tp3}\``;
+        details = `🎉 ربح الصفقة الإجمالي: \`${sign}${tradeProfitPct}%\`\n💵 تم بيع الـ 50% المتبقية بالكامل عند: \`$${opp.targets.tp3}\``;
         break;
+
       case 'SL':
         title = `🛑 *تم ضرب وقف الخسارة (Stop Loss)*`;
         details = `📉 خسارة الصفقة: \`${sign}${tradeProfitPct}%\`\n🛑 السعر: \`$${opp.stopLoss}\``;
         break;
+
       case 'BE':
         title = `🛡️ *إغلاق على نقطة الدخول (Break-Even)*`;
-        details = `⚖️ ارتد السعر لنقطة الدخول \`$${entryPrice}\` لـ \`${symbol}\`، وتم الخروج بربح 25% المحجوز مسبقاً وبدون أي خسارة.`;
+        details = `⚖️ ارتد السعر لنقطة الدخول \`$${entryPrice}\` لـ \`${symbol}\`، وتم الخروج بنصف الكمية المتبقية دون خسارة (مع الاحتفاظ بربح 50% المحجوز عند TP1).`;
         break;
     }
 
