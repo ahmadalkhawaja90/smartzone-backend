@@ -39,8 +39,10 @@ export interface IOpportunity extends Document {
     | 'HIT_SL'
     | 'CLOSED_BE'
     | 'EXPIRED'
-    | 'CANCELLED';
-  
+    | 'CANCELLED'
+    | 'TP2_SECURED'
+    | 'CLOSED_TRAILING_TP1';
+
   // حقول التتبع الخاصة بمنصة باينانس
   orderId?: string;
   entryOrderType?: 'LIMIT' | 'MARKET';
@@ -95,6 +97,8 @@ const OpportunitySchema = new Schema<IOpportunity>(
         'CLOSED_BE',
         'EXPIRED',
         'CANCELLED',
+        'TP2_SECURED',
+        'CLOSED_TRAILING_TP1',
       ],
       default: 'PENDING_ENTRY',
     },
