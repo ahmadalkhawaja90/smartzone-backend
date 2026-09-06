@@ -33,7 +33,7 @@ export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer):
   if (score < 60) return false;
 
   try {
-    const symbol = opp.symbol || 'ASSET';
+    const symbol = (opp.symbol || 'ASSET').toUpperCase();
     const entry = opp.entryZone?.max ?? opp.currentPrice;
     const sl = opp.stopLoss ?? 0;
     const tp1 = opp.targets?.tp1 ?? opp.tp1 ?? 0;
@@ -66,14 +66,16 @@ export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer):
 // 2. تحديثات الأهداف والستوب مع عداد الصفقات الرابحة والخاسرة فقط
 export const sendTradeUpdateToTelegram = async (
   event: 'FILLED' | 'TP1' | 'TP2' | 'TP3' | 'SL' | 'BE' | 'TRAILING_TP1',
-  opp: any
+  opp: any,
+  _tradeProfitPct?: number
 ) => {
   if (!bot || !CHANNEL_ID) return;
 
   try {
-    const symbol = opp.symbol;
+    const symbol = (opp.symbol || '').toUpperCase();
 
-    if (event === 'TP1' || event === 'TP2' || event === 'TP3') winCount++;
+    // يتم احتساب الصفقة رابحة لمرة واحدة فقط عند حسم TP1
+    if (event === 'TP1') winCount++;
     if (event === 'SL') lossCount++;
 
     let updateText = '';
