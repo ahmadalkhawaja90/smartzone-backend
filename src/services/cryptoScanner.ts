@@ -52,7 +52,7 @@ export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
 
 // ==========================================================
 // 2. جلب الشموع البيانية
-// ==========================================================
+// ==========================================
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const toBybitInterval = (interval: string): string => {
@@ -209,7 +209,6 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
           }
         }
 
-        // تم التعديل هنا: فحص الشموع الحالية فقط (آخر 3 شموع كحد أقصى)
         if (mssIdx !== -1 && (candles.length - 1 - mssIdx <= 10)) {
           const impulseLow = sweepNode.price;
           const equilibrium = impulseLow + (highestAfterMSS - impulseLow) * 0.5;
@@ -292,24 +291,31 @@ export const runFullCryptoScan = async () => {
   }
 
   let discoveredCount = 0;
+  // قفل محلي للدورة لمنع إرسال نفس العملة على فريمين مختلفين
+  const scannedInThisRun = new Set<string>();
 
   for (const symbol of symbols) {
     for (const tf of targetTimeframes) {
       try {
+        if (scannedInThisRun.has(symbol)) {
+          continue; // تم رصد العملة بالفعل في نفس الدورة
+        }
+
         const candles = await fetchCandles(symbol, tf, 100);
         if (candles.length < 40) continue;
 
         const result = analyzeICTSetup(candles, symbol, tf);
 
         if (result) {
-          // فحص منع التكرار: التأكد من عدم وجود صفقة نشطة أو معلقة لنفس العملة
+          // فحص شامل لقاعدة البيانات: استبعاد أي صفقة معلقة أو نشطة أو قيد التأمين لنفس العملة
           const existing = await Opportunity.findOne({
             symbol,
-            status: { $in: ['PENDING_ENTRY', 'ACTIVE', 'BREAK_EVEN'] }
+            status: { $in: ['PENDING_ENTRY', 'ACTIVE', 'BREAK_EVEN', 'TP2_SECURED'] }
           });
 
-          if (!existing) {
-            // إرسال أمر الشراء المحدد (Limit Order) لمنصة باينانس
+          if (!existing && !scannedInThisRun.has(symbol)) {
+            scannedInThisRun.add(symbol);
+
             const entryPrice = result.opportunity.entryZone.max;
             const orderResult = await placeLimitBuyOrder(symbol, entryPrice);
 
@@ -327,13 +333,11 @@ export const runFullCryptoScan = async () => {
             });
 
             discoveredCount++;
-            console.log(`🎯 [فرصة ICT رُصدت]: ${symbol} [${tf}] - حالة الدخول: معلق`);
+            console.log(`🎯 [فرصة ICT رُصدت]: ${symbol} [${tf}] - تم الحفظ والإرسال.`);
 
             const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
 
-            sendOpportunityToTelegram(createdOpp, chartBuffer).catch((err: any) => {
-              console.error(`⚠️ خطأ إرسال التلغرام لـ ${symbol}:`, err.message);
-            });
+            await sendOpportunityToTelegram(createdOpp, chartBuffer);
           }
         }
       } catch (error) {
