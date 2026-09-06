@@ -52,7 +52,7 @@ export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
 
 // ==========================================================
 // 2. جلب الشموع البيانية
-// ==========================================
+// ==========================================================
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const toBybitInterval = (interval: string): string => {
@@ -307,38 +307,46 @@ export const runFullCryptoScan = async () => {
         const result = analyzeICTSetup(candles, symbol, tf);
 
         if (result) {
-          // فحص شامل لقاعدة البيانات: استبعاد أي صفقة معلقة أو نشطة أو قيد التأمين لنفس العملة
+          // 🛑 قفل مانع التكرار الصارم:
+          // 1. استبعاد أي صفقة ما زالت مفتوحة أو معلقة
+          // 2. استبعاد أي توصية لنفس العملة تم إرسالها خلال آخر 12 ساعة حتى لو أغلقت أو أُلغيت
+          const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
           const existing = await Opportunity.findOne({
             symbol,
-            status: { $in: ['PENDING_ENTRY', 'ACTIVE', 'BREAK_EVEN', 'TP2_SECURED'] }
+            $or: [
+              { status: { $in: ['PENDING_ENTRY', 'ACTIVE', 'BREAK_EVEN', 'TP2_SECURED'] } },
+              { createdAt: { $gte: twelveHoursAgo } }
+            ]
           });
 
-          if (!existing && !scannedInThisRun.has(symbol)) {
-            scannedInThisRun.add(symbol);
-
-            const entryPrice = result.opportunity.entryZone.max;
-            const orderResult = await placeLimitBuyOrder(symbol, entryPrice);
-
-            let orderId: string | undefined = undefined;
-            if (orderResult.success && orderResult.orderId) {
-              orderId = orderResult.orderId;
-              console.log(`⚡ [Binance Testnet] تم وضع أمر شراء معلق لـ ${symbol} بسعر $${entryPrice} (Order ID: ${orderId})`);
-            } else {
-              console.warn(`⚠️ [Binance Testnet] لم يتم إرسال الطلب لـ ${symbol}: ${orderResult.error}`);
-            }
-
-            const createdOpp = await Opportunity.create({
-              ...result.opportunity,
-              orderId,
-            });
-
-            discoveredCount++;
-            console.log(`🎯 [فرصة ICT رُصدت]: ${symbol} [${tf}] - تم الحفظ والإرسال.`);
-
-            const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
-
-            await sendOpportunityToTelegram(createdOpp, chartBuffer);
+          if (existing || scannedInThisRun.has(symbol)) {
+            continue; // تخطي العملة فوراً وعدم إرسالها
           }
+
+          scannedInThisRun.add(symbol);
+
+          const entryPrice = result.opportunity.entryZone.max;
+          const orderResult = await placeLimitBuyOrder(symbol, entryPrice);
+
+          let orderId: string | undefined = undefined;
+          if (orderResult.success && orderResult.orderId) {
+            orderId = orderResult.orderId;
+            console.log(`⚡ [Binance Testnet] تم وضع أمر شراء معلق لـ ${symbol} بسعر $${entryPrice} (Order ID: ${orderId})`);
+          } else {
+            console.warn(`⚠️ [Binance Testnet] لم يتم إرسال الطلب لـ ${symbol}: ${orderResult.error}`);
+          }
+
+          const createdOpp = await Opportunity.create({
+            ...result.opportunity,
+            orderId,
+          });
+
+          discoveredCount++;
+          console.log(`🎯 [فرصة ICT رُصدت]: ${symbol} [${tf}] - تم الحفظ والإرسال.`);
+
+          const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
+
+          await sendOpportunityToTelegram(createdOpp, chartBuffer);
         }
       } catch (error) {
         // Continue loop
