@@ -41,7 +41,7 @@ export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer):
     const tp3 = opp.targets?.tp3 ?? opp.tp3 ?? (entry + (tp2 - entry) * 1.5);
 
     const message = 
-`💎 *توصية تداول جديدة* 💎
+`💎 *فرصة محتملة جديدة* 💎
 
 🪙 *العملة:* #${symbol}
 💵 *Entry:* \`${entry}\`
