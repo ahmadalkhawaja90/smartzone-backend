@@ -11,26 +11,53 @@ export interface CandleData {
   volume: number;
 }
 
-const EXPANDED_PAIRS = [
+// قائمة احتياطية في حال تعذر جلب السوق آلياً
+const FALLBACK_PAIRS = [
   'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'NEARUSDT', 'DOTUSDT', 'SUIUSDT',
   'DOGEUSDT', 'TONUSDT', 'APTUSDT', 'MATICUSDT', 'LTCUSDT', 'BCHUSDT', 'ICPUSDT', 'FETUSDT', 'RENDERUSDT', 'INJUSDT',
   'TAOUSDT', 'PEPEUSDT', 'SHIBUSDT', 'OPUSDT', 'ARBUSDT', 'ATOMUSDT', 'FILUSDT', 'FTMUSDT', 'WIFUSDT', 'KASUSDT',
-  'STXUSDT', 'IMXUSDT', 'HBARUSDT', 'GRTUSDT', 'AAVEUSDT', 'MKRUSDT', 'SEIUSDT', 'FLOKIUSDT', 'BONKUSDT', 'RUNEUSDT',
-  'BEAMUSDT', 'JUPUSDT', 'STRKUSDT', 'PENDLEUSDT', 'TIAUSDT', 'ENSUSDT', 'GALAUSDT', 'CRVUSDT', 'LDOUSDT', 'QNTUSDT',
-  'ALGOUSDT', 'DYDXUSDT', 'SANDUSDT', 'MANAUSDT', 'AXSUSDT', 'FLOWUSDT', 'CHZUSDT', 'EGLDUSDT', 'CFXUSDT', 'MINAUSDT',
-  'ZILUSDT', 'KAVAUSDT', 'SNXUSDT', 'COMPUSDT', 'BLURUSDT', '1INCHUSDT', 'WOOUSDT', 'ROSEUSDT', 'GMXUSDT', 'RNDRUSDT',
-  'AGIXUSDT', 'ORDIUSDT', 'SATSUSDT', 'ILVUSDT', 'SUPERUSDT', 'PYTHUSDT', 'ZROUSDT', 'IOUSDT', 'NOTUSDT', 'BBUSDT',
-  'WUSDT', 'ZKUSDT', 'LISTAUSDT', 'TNSRUSDT', 'OMNIUSDT', 'REZUSDT', 'SAGAUSDT', 'ENAUSDT', 'ETHFIUSDT', 'AEVOUSDT',
-  'METISUSDT', 'PORTALUSDT', 'DYMUSDT', 'ALTUSDT', 'MANTAUSDT', 'XAIUSDT', 'AIUSDT', 'NFPUSDT', 'ACEUSDT', 'JTOUSDT',
-  'MEMEUSDT', 'TUSDT', 'ORBSUSDT', 'ARKMUSDT', 'WLDUSDT', 'CYBERUSDT', 'MAVUSDT', 'XVGUSDT'
+  'STXUSDT', 'IMXUSDT', 'HBARUSDT', 'GRTUSDT', 'AAVEUSDT', 'MKRUSDT', 'SEIUSDT', 'FLOKIUSDT', 'BONKUSDT', 'RUNEUSDT'
 ];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// كاش لتخزين أزواج المنصة وتحديثها كل 12 ساعة
+let cachedPairs: string[] = [];
+let lastPairsFetchTime = 0;
+
+const fetchAllSpotUsdtPairs = async (): Promise<string[]> => {
+  const now = Date.now();
+  if (cachedPairs.length > 0 && now - lastPairsFetchTime < 12 * 60 * 60 * 1000) {
+    return cachedPairs;
+  }
+
+  try {
+    const res = await axios.get('https://api.bybit.com/v5/market/instruments-info', {
+      params: { category: 'spot' },
+      timeout: 10000,
+    });
+    const list = res.data.result?.list || [];
+    const activeUsdtPairs = list
+      .filter((item: any) => item.quoteCoin === 'USDT' && item.status === 'Trading')
+      .map((item: any) => item.symbol);
+
+    if (activeUsdtPairs.length > 0) {
+      cachedPairs = activeUsdtPairs;
+      lastPairsFetchTime = now;
+      console.log(`📡 [Wyckoff Scanner] تم تحديث أزواج Bybit Spot آلياً: ${cachedPairs.length} زوج نشط.`);
+      return cachedPairs;
+    }
+  } catch (error: any) {
+    console.warn('⚠️ تعذر جلب قائمة الأزواج ديناميكياً، استخدام القائمة الاحتياطية.');
+  }
+
+  return cachedPairs.length > 0 ? cachedPairs : FALLBACK_PAIRS;
+};
+
 // منع تكرار إرسال نفس العملة خلال 3 أيام (72 ساعة)
 const alertedPairs = new Map<string, number>();
 
-const fetchCandles = async (symbol: string, interval = '240', limit = 120): Promise<CandleData[]> => {
+const fetchCandles = async (symbol: string, interval = '240', limit = 60): Promise<CandleData[]> => {
   try {
     const res = await axios.get('https://api.bybit.com/v5/market/kline', {
       params: { category: 'spot', symbol, interval, limit },
@@ -66,8 +93,10 @@ const detectWyckoffSetup = (candles: CandleData[], symbol: string) => {
   const rangeResistance = Math.max(...rangeSlice.map(c => c.high));
   const rangeSpread = (rangeResistance - rangeSupport) / rangeSupport;
 
+  // نسبة النطاق العرضي للتجميع
   if (rangeSpread > 0.22 || rangeSpread < 0.035) return null;
 
+  // رصد شمعة الـ Spring (كسر الدعم وإغلاق أعلاه)
   let springCandle = null;
   for (let s = i - 8; s <= i - 2; s++) {
     if (candles[s].low < rangeSupport && candles[s].close > rangeSupport * 0.980) {
@@ -77,6 +106,7 @@ const detectWyckoffSetup = (candles: CandleData[], symbol: string) => {
   }
   if (!springCandle) return null;
 
+  // رصد شمعة SOS الصاعدة القوية
   let sosIdx = -1;
   for (let j = i - 5; j <= i; j++) {
     const c = candles[j];
@@ -89,6 +119,7 @@ const detectWyckoffSetup = (candles: CandleData[], symbol: string) => {
   }
   if (sosIdx === -1) return null;
 
+  // رصد فجوة FVG
   let foundFVG: FVG | null = null;
   for (let k = i - 6; k < sosIdx; k++) {
     if (candles[k].high < candles[k + 2].low) {
@@ -103,15 +134,18 @@ const detectWyckoffSetup = (candles: CandleData[], symbol: string) => {
   const entryPrice = parseFloat(((foundFVG.top + foundFVG.bottom) / 2).toFixed(6));
   const currentClose = candles[i].close;
 
+  // التأكد من ملامسة السعر للمنطقة
   if (currentClose >= foundFVG.bottom * 0.995 && currentClose <= foundFVG.top * 1.03) {
     const stopLoss = parseFloat((springCandle.low * 0.992).toFixed(6));
     const risk = entryPrice - stopLoss;
     const riskPercent = parseFloat(((risk / entryPrice) * 100).toFixed(2));
 
+    // استبعاد الصفقات ذات الوقف الأكبر من 5.5%
     if (risk <= 0 || riskPercent > 5.5) return null;
 
     const tp1 = parseFloat((entryPrice * 1.040).toFixed(6));
     const tp2 = parseFloat((entryPrice * 1.085).toFixed(6));
+    const tp3 = parseFloat((entryPrice * 1.150).toFixed(6));
 
     return {
       symbol,
@@ -119,6 +153,7 @@ const detectWyckoffSetup = (candles: CandleData[], symbol: string) => {
       stopLoss,
       tp1,
       tp2,
+      tp3,
       riskPercent,
       fvgTop: foundFVG.top,
       fvgBottom: foundFVG.bottom
@@ -129,12 +164,15 @@ const detectWyckoffSetup = (candles: CandleData[], symbol: string) => {
 };
 
 export const runWyckoffScannerJob = async () => {
-  console.log('💎 [Wyckoff Swing Scanner] بدء دورة الفحص للسوينغ المؤسسي على 4H...');
+  console.log('💎 [Wyckoff Swing Scanner] بدء دورة الفحص للسوق كاملاً على 4H...');
+  const pairsToScan = await fetchAllSpotUsdtPairs();
   const now = Date.now();
 
-  for (const symbol of EXPANDED_PAIRS) {
+  let foundSignalsCount = 0;
+
+  for (const symbol of pairsToScan) {
     const lastAlert = alertedPairs.get(symbol) || 0;
-    // إذا تم تنبيه هذه العملة خلال الـ 72 ساعة الماضية، تجاوز
+    // منع التكرار لنفس الزوج خلال 72 ساعة
     if (now - lastAlert < 72 * 60 * 60 * 1000) continue;
 
     try {
@@ -144,6 +182,7 @@ export const runWyckoffScannerJob = async () => {
       const setup = detectWyckoffSetup(candles, symbol);
       if (setup) {
         alertedPairs.set(symbol, now);
+        foundSignalsCount++;
 
         let chartBuffer: Buffer | undefined = undefined;
         try {
@@ -154,7 +193,7 @@ export const runWyckoffScannerJob = async () => {
             stopLoss: setup.stopLoss,
             tp1: setup.tp1,
             tp2: setup.tp2,
-            tp3: setup.tp2,
+            tp3: setup.tp3,
             fvgTop: setup.fvgTop,
             fvgBottom: setup.fvgBottom,
           });
@@ -165,8 +204,8 @@ export const runWyckoffScannerJob = async () => {
       }
     } catch {}
 
-    await sleep(200);
+    await sleep(60);
   }
 
-  console.log('🏁 [Wyckoff Swing Scanner] اكتملت دورة فحص السوينغ بنجاح.');
+  console.log(`🏁 [Wyckoff Swing Scanner] اكتمل فحص ${pairsToScan.length} زوج. إشارات جديدة: ${foundSignalsCount}`);
 };
