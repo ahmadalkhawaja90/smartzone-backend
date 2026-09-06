@@ -1,182 +1,105 @@
-import axios from 'axios';
-import { Opportunity } from '../models/Opportunity';
-import { checkOrderStatus, placeMarketSellOrder, cancelBinanceOrder } from './binanceClient';
-import { sendTradeUpdateToTelegram } from './telegramBot';
+import TelegramBot from 'node-telegram-bot-api';
 
-// جلب السعر اللحظي للعملة من باينانس
-const getLatestPrice = async (symbol: string): Promise<number | null> => {
+const token = process.env.TELEGRAM_BOT_TOKEN;
+const CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID;
+
+let bot: TelegramBot | null = null;
+if (token) {
+  bot = new TelegramBot(token);
+}
+
+// عداد مباشر وبسيط للصفقات
+let winCount = 0;
+let lossCount = 0;
+
+export const generateOneTimeInviteLink = async (): Promise<string | null> => {
+  if (!bot || !CHANNEL_ID) return null;
   try {
-    const res = await axios.get(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`, {
-      timeout: 5000,
+    const invite = await bot.createChatInviteLink(CHANNEL_ID, {
+      member_limit: 1,
+      expire_date: Math.floor(Date.now() / 1000) + 3600,
     });
-    return parseFloat(res.data.price);
+    return invite.invite_link;
   } catch {
     return null;
   }
 };
 
-// 1. مراقبة وإدارة الأوامر المعلقة
-const trackPendingOrders = async () => {
-  const pendingOpps = await Opportunity.find({ status: 'PENDING_ENTRY' });
+// 1. إرسال التوصية بالشكل المنسق والمختصر أسفل الشارت
+export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer): Promise<boolean> => {
+  if (!bot || !CHANNEL_ID) return false;
 
-  for (const opp of pendingOpps) {
-    try {
-      const currentPrice = await getLatestPrice(opp.symbol);
-      if (!currentPrice) continue;
+  const score = opp.confluenceScore || 0;
+  if (score < 60) return false;
 
-      // أ) التحقق مما إذا كان السعر قد تجاوز TP1 دون تفعيل الشراء (Setup Invalidation)
-      const hoursSinceCreation = (Date.now() - new Date(opp.createdAt).getTime()) / (1000 * 60 * 60);
-      if (currentPrice >= opp.targets.tp1 || hoursSinceCreation >= 24) {
-        if (opp.orderId) {
-          await cancelBinanceOrder(opp.symbol, opp.orderId);
-        }
-        opp.status = 'EXPIRED';
-        opp.closedAt = new Date();
-        await opp.save();
-        console.log(`⏱️ [Order Expired] تم إلغاء الأمر المعلق لـ ${opp.symbol}`);
-        continue;
-      }
+  try {
+    const symbol = (opp.symbol || 'ASSET').toUpperCase();
+    const entry = opp.entryZone?.max ?? opp.currentPrice;
+    const sl = opp.stopLoss ?? 0;
+    const tp1 = opp.targets?.tp1 ?? opp.tp1 ?? 0;
+    const tp2 = opp.targets?.tp2 ?? opp.tp2 ?? 0;
+    const tp3 = opp.targets?.tp3 ?? opp.tp3 ?? (entry + (tp2 - entry) * 1.5);
 
-      // ب) فحص حالة التنفيذ عبر الـ API
-      let isFilled = false;
-      if (opp.orderId) {
-        const orderInfo = await checkOrderStatus(opp.symbol, opp.orderId);
-        if (orderInfo && orderInfo.status === 'FILLED') {
-          isFilled = true;
-        }
-      } else {
-        if (currentPrice <= opp.entryZone.max) {
-          isFilled = true;
-        }
-      }
+    const message = 
+`💎 *توصية تداول جديدة* 💎
 
-      if (isFilled) {
-        opp.status = 'ACTIVE';
-        opp.currentStopLoss = opp.stopLoss;
-        await opp.save();
-        console.log(`🚀 [Order Filled] تم تفعيل صفقة الشراء لـ ${opp.symbol}`);
-        await sendTradeUpdateToTelegram('FILLED', opp);
-      }
-    } catch (error: any) {
-      console.error(`⚠️ خطأ تتبع الأمر المعلق لـ ${opp.symbol}:`, error.message);
+🪙 *العملة:* #${symbol}
+💵 *Entry:* \`${entry}\`
+🛑 *SL:* \`${sl}\` ❌
+🎯 *TP1:* \`${tp1}\`
+🚀 *TP2:* \`${tp2}\`
+👑 *TP3:* \`${tp3}\`
+
+🛡️ *تأمين 50% من الأرباح عند الهدف الأول ورفع الستوب لنقطة الدخول.*`;
+
+    if (chartBuffer) {
+      await bot.sendPhoto(CHANNEL_ID, chartBuffer, { caption: message, parse_mode: 'Markdown' });
+    } else {
+      await bot.sendMessage(CHANNEL_ID, message, { parse_mode: 'Markdown' });
     }
+    return true;
+  } catch (error) {
+    return false;
   }
 };
 
-// 2. مراقبة وإدارة الصفقات النشطة (SL, TP1, Break-Even, Trailing SL, TP3)
-const trackActiveTrades = async () => {
-  // جلب كافة الصفقات النشطة بمختلف مراحلها
-  const activeOpps = await Opportunity.find({ 
-    status: { $in: ['ACTIVE', 'BREAK_EVEN', 'TP2_SECURED'] } 
-  });
+// 2. تحديثات الأهداف والستوب مع عداد الصفقات فقط (متوافق مع liveTracker)
+export const sendTradeUpdateToTelegram = async (
+  event: 'FILLED' | 'TP1' | 'TP2' | 'TP3' | 'SL' | 'BE' | 'TRAILING_TP1',
+  opp: any,
+  _tradeProfitPct?: number
+) => {
+  if (!bot || !CHANNEL_ID) return;
 
-  for (const opp of activeOpps) {
-    try {
-      const currentPrice = await getLatestPrice(opp.symbol);
-      if (!currentPrice) continue;
+  try {
+    const symbol = (opp.symbol || '').toUpperCase();
 
-      const entryPrice = opp.entryZone.max;
-      const allocatedCapital = 50; // القيمة المخصصة لكل صفقة (50$)
-      const totalQty = allocatedCapital / entryPrice;
+    if (event === 'TP1' || event === 'TP2' || event === 'TP3') winCount++;
+    if (event === 'SL') lossCount++;
 
-      // ==========================================
-      // أ) الصفقات بالحالة ACTIVE (قبل تأمين الدخول)
-      // ==========================================
-      if (opp.status === 'ACTIVE') {
-        // ضرب وقف الخسارة الأساسي
-        if (currentPrice <= opp.stopLoss) {
-          const lossPct = parseFloat((((opp.stopLoss - entryPrice) / entryPrice) * 100).toFixed(2));
-          opp.status = 'HIT_SL';
-          opp.profitPercentage = lossPct;
-          opp.closedAt = new Date();
-          await opp.save();
-          console.log(`🛑 [Stop Loss Hit] ضرب وقف الخسارة لـ ${opp.symbol}`);
-          await sendTradeUpdateToTelegram('SL', opp, lossPct);
-          continue;
-        }
+    let updateText = '';
+    if (event === 'FILLED') updateText = `⚡ *تم تفعيل أمر الدخول لعملة* #${symbol}`;
+    if (event === 'TP1') updateText = `🎯 *تم تحقيق الهدف الأول (TP1) لعملة* #${symbol} ➔ تأمين الدخول`;
+    if (event === 'TP2') updateText = `🚀 *تم تحقيق الهدف الثاني (TP2) لعملة* #${symbol}`;
+    if (event === 'TP3') updateText = `👑 *تم تحقيق الهدف النهائي (TP3) لعملة* #${symbol}`;
+    if (event === 'SL') updateText = `🛑 *ضرب وقف الخسارة (SL) لعملة* #${symbol}`;
+    if (event === 'BE') updateText = `🛡️ *إغلاق على نقطة الدخول لعملة* #${symbol}`;
+    if (event === 'TRAILING_TP1') updateText = `🔒 *إغلاق بربح محجوز لعملة* #${symbol}`;
 
-        // ضرب الهدف الأول (TP1) -> إغلاق 50% ونقل الوقف لنقطة الدخول
-        if (currentPrice >= opp.targets.tp1) {
-          const sellQty = totalQty * 0.50; // بيع نصف الكمية (50%)
-          await placeMarketSellOrder(opp.symbol, sellQty);
+    const message = 
+`${updateText}
 
-          const tp1ProfitPct = parseFloat((((opp.targets.tp1 - entryPrice) / entryPrice) * 100).toFixed(2));
-          opp.status = 'BREAK_EVEN';
-          opp.currentStopLoss = entryPrice; // الوقف أصبح على الدخول
-          opp.profitPercentage = tp1ProfitPct;
-          await opp.save();
-          console.log(`🎯 [TP1 Hit & 50% Sold] تم بيع 50% وتأمين الدخول لـ ${opp.symbol}`);
-          await sendTradeUpdateToTelegram('TP1', opp, tp1ProfitPct);
-          continue;
-        }
-      }
+📊 *سجل الأداء:*
+✅ *الصفقات الرابحة:* \`${winCount}\`
+❌ *الصفقات الخاسرة:* \`${lossCount}\``;
 
-      // ==========================================
-      // ب) الصفقات بالحالة BREAK_EVEN (مؤمنة بعد TP1)
-      // ==========================================
-      if (opp.status === 'BREAK_EVEN') {
-        // ارتداد السعر وضرب نقطة الدخول (خروج الـ 50% المتبقية دون خسارة)
-        if (currentPrice <= entryPrice) {
-          opp.status = 'CLOSED_BE';
-          opp.closedAt = new Date();
-          await opp.save();
-          console.log(`🛡️ [Closed at BE] خروج المتبقي على الدخول لـ ${opp.symbol}`);
-          await sendTradeUpdateToTelegram('BE', opp, 0);
-          continue;
-        }
-
-        // ضرب الهدف الثاني TP2 -> نقل الوقف إلى TP1 لحجز مزيد من الأرباح
-        if (currentPrice >= opp.targets.tp2) {
-          opp.status = 'TP2_SECURED';
-          opp.currentStopLoss = opp.targets.tp1; // رفع الوقف ليصبح عند الهدف الأول
-          await opp.save();
-          console.log(`🔥 [TP2 Hit & Trailing Moved] تم رفع الوقف إلى TP1 لـ ${opp.symbol}`);
-          await sendTradeUpdateToTelegram('TP2', opp);
-          continue;
-        }
-      }
-
-      // ==========================================
-      // ج) الصفقات بالحالة TP2_SECURED (الوقف عند TP1)
-      // ==========================================
-      if (opp.status === 'TP2_SECURED') {
-        // ارتداد السعر وضرب وقف TP1 المحجوز
-        if (currentPrice <= opp.targets.tp1) {
-          const remainingQty = totalQty * 0.50;
-          await placeMarketSellOrder(opp.symbol, remainingQty);
-
-          const securedProfitPct = parseFloat((((opp.targets.tp1 - entryPrice) / entryPrice) * 100).toFixed(2));
-          opp.status = 'CLOSED_TRAILING_TP1';
-          opp.profitPercentage = securedProfitPct;
-          opp.closedAt = new Date();
-          await opp.save();
-          console.log(`🔒 [Trailing SL Hit at TP1] تم إغلاق المتبقي على ربح TP1 لـ ${opp.symbol}`);
-          await sendTradeUpdateToTelegram('TRAILING_TP1', opp, securedProfitPct);
-          continue;
-        }
-
-        // ضرب الهدف الثالث TP3 (الإغلاق التام للـ 50% المتبقية)
-        if (currentPrice >= opp.targets.tp3) {
-          const remainingQty = totalQty * 0.50;
-          await placeMarketSellOrder(opp.symbol, remainingQty);
-
-          const tp3ProfitPct = parseFloat((((opp.targets.tp3 - entryPrice) / entryPrice) * 100).toFixed(2));
-          opp.status = 'HIT_TP3';
-          opp.profitPercentage = tp3ProfitPct;
-          opp.closedAt = new Date();
-          await opp.save();
-          console.log(`👑 [TP3 Hit] إغلاق كامل الصفقة بنجاح تام لـ ${opp.symbol}`);
-          await sendTradeUpdateToTelegram('TP3', opp, tp3ProfitPct);
-        }
-      }
-    } catch (error: any) {
-      console.error(`⚠️ خطأ تتبع الصفقة النشطة لـ ${opp.symbol}:`, error.message);
-    }
+    await bot.sendMessage(CHANNEL_ID, message, { parse_mode: 'Markdown' });
+  } catch (error: any) {
+    console.error(`Error trade update:`, error.message);
   }
 };
 
-// الدالة المجمعة التي يتم استدعاؤها دورياً
-export const runLiveTrackerCycle = async () => {
-  await trackPendingOrders();
-  await trackActiveTrades();
+export const initTelegramBot = () => {
+  if (!token) return;
+  console.log('🤖 بوت التلغرام جاهز للعمل...');
 };
