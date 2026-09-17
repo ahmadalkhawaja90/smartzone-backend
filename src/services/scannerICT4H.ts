@@ -2,6 +2,7 @@ import axios from 'axios';
 import mongoose, { Schema, Document, model } from 'mongoose';
 import { sendICT4HSignalToTelegram, sendTradeOutcomeToTelegram } from './telegramHarmonics';
 import { generateChartPngBuffer, CandlePlotData } from './chartGenerator';
+import { placeLimitBuyOrder, placeMarketSellOrder } from './binanceClient';
 
 const BINANCE_BASE_URL = process.env.BINANCE_TESTNET_URL || 'https://api.binance.com';
 const TIMEFRAME = '4h';
@@ -37,6 +38,8 @@ export interface ITradeICT4H extends Document {
   riskPct: number;
   score: number;
   allocatedCapital: number;
+  quantity?: number;
+  binanceOrderId?: string;
   status: 'ACTIVE' | 'WIN' | 'LOSS';
   entryTime: Date;
   exitTime?: Date;
@@ -54,6 +57,8 @@ const TradeICT4HSchema = new Schema<ITradeICT4H>({
   riskPct: { type: Number, required: true },
   score: { type: Number, required: true },
   allocatedCapital: { type: Number, required: true },
+  quantity: { type: Number, default: 0 },
+  binanceOrderId: { type: String },
   status: { type: String, enum: ['ACTIVE', 'WIN', 'LOSS'], default: 'ACTIVE', index: true },
   entryTime: { type: Date, default: Date.now },
   exitTime: { type: Date },
@@ -200,7 +205,7 @@ function analyzeICTSetup(candles: Candle[]) {
 }
 
 // ==========================================
-// 3. المحفظة والمراقبة وإرسال الإشعارات
+// 3. المحفظة والمراقبة والتنفيذ الفعلي
 // ==========================================
 async function getAccountBalance(): Promise<number> {
   const initialEquity = 500.0;
@@ -241,6 +246,11 @@ async function monitorActiveTrades() {
       }
 
       if (closed) {
+        // تنفيذ أمر بيع الإغلاق في باينانس Testnet إذا وُجدت كمية
+        if (trade.quantity && trade.quantity > 0) {
+          await placeMarketSellOrder(trade.symbol, trade.quantity);
+        }
+
         await trade.save();
         const newBalance = await getAccountBalance();
 
@@ -255,7 +265,9 @@ async function monitorActiveTrades() {
           currentBalance: newBalance,
         });
       }
-    } catch {}
+    } catch (err: any) {
+      console.error(`⚠️ خطأ مراقبة صفقة ${trade.symbol}:`, err.message);
+    }
     await sleep(150);
   }
 }
@@ -293,6 +305,9 @@ export async function runICT4HScannerJob() {
     const tradeAllocation = totalEquity * POSITION_SIZE_RATIO;
 
     for (const trade of selectedTrades) {
+      // تنفيذ أمر شراء حقيقي في باينانس Testnet
+      const buyRes = await placeLimitBuyOrder(trade.symbol, trade.entryPrice, tradeAllocation);
+
       await TradeICT4H.create({
         symbol: trade.symbol,
         entryPrice: trade.entryPrice,
@@ -301,11 +316,12 @@ export async function runICT4HScannerJob() {
         riskPct: trade.riskPct,
         score: trade.score,
         allocatedCapital: parseFloat(tradeAllocation.toFixed(2)),
+        quantity: buyRes.quantity || 0,
+        binanceOrderId: buyRes.orderId || undefined,
         status: 'ACTIVE',
         entryTime: new Date(),
       });
 
-      // توليد صورة الشارت مع تمرير tp2 و tp3 لحل خطأ ChartOverlayOptions
       let chartBuffer: Buffer | undefined = undefined;
       try {
         const risk = trade.entryPrice - trade.stopLoss;
