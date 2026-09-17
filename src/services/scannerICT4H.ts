@@ -8,7 +8,8 @@ const BINANCE_BASE_URL = process.env.BINANCE_TESTNET_URL || 'https://api.binance
 const TIMEFRAME = '4h';
 const MAX_CONCURRENT_TRADES = 3;
 const POSITION_SIZE_RATIO = 0.30;
-const MAX_SL_PCT = 3.8;
+const MAX_SL_PCT = 4.5;
+const MIN_SL_PCT = 0.8;
 
 const WATCHLIST = [
   'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 
@@ -36,11 +37,12 @@ export interface ITradeICT4H extends Document {
   stopLoss: number;
   tp1: number;
   riskPct: number;
-  score: number;
   allocatedCapital: number;
+  discountDepth: number;
   quantity?: number;
   binanceOrderId?: string;
-  status: 'ACTIVE' | 'WIN' | 'LOSS';
+  isTriggered: boolean;
+  status: 'ACTIVE' | 'WIN' | 'LOSS' | 'CANCELLED';
   entryTime: Date;
   exitTime?: Date;
   pnlDollars?: number;
@@ -55,11 +57,12 @@ const TradeICT4HSchema = new Schema<ITradeICT4H>({
   stopLoss: { type: Number, required: true },
   tp1: { type: Number, required: true },
   riskPct: { type: Number, required: true },
-  score: { type: Number, required: true },
   allocatedCapital: { type: Number, required: true },
+  discountDepth: { type: Number, required: true },
   quantity: { type: Number, default: 0 },
   binanceOrderId: { type: String },
-  status: { type: String, enum: ['ACTIVE', 'WIN', 'LOSS'], default: 'ACTIVE', index: true },
+  isTriggered: { type: Boolean, default: false },
+  status: { type: String, enum: ['ACTIVE', 'WIN', 'LOSS', 'CANCELLED'], default: 'ACTIVE', index: true },
   entryTime: { type: Date, default: Date.now },
   exitTime: { type: Date },
   pnlDollars: { type: Number, default: 0 },
@@ -69,7 +72,7 @@ const TradeICT4HSchema = new Schema<ITradeICT4H>({
 export const TradeICT4H = mongoose.models.TradeICT4H || model<ITradeICT4H>('TradeICT4H', TradeICT4HSchema, 'trades_ict_4h');
 
 // ==========================================
-// 2. تحليل ICT 4H الفني
+// 2. دوال التحليل الفني والنموذج المؤسساتي
 // ==========================================
 interface Candle {
   time: number;
@@ -80,7 +83,7 @@ interface Candle {
   volume: number;
 }
 
-async function getBinanceKlines(symbol: string, interval = TIMEFRAME, limit = 120): Promise<Candle[]> {
+async function getBinanceKlines(symbol: string, interval = TIMEFRAME, limit = 100): Promise<Candle[]> {
   try {
     const res = await axios.get(`${BINANCE_BASE_URL}/api/v3/klines`, {
       params: { symbol, interval, limit },
@@ -99,115 +102,102 @@ async function getBinanceKlines(symbol: string, interval = TIMEFRAME, limit = 12
   }
 }
 
-function findSwings(candles: Candle[], leftRight = 2) {
-  const swings: { index: number; price: number; type: 'HIGH' | 'LOW' }[] = [];
-  for (let i = leftRight; i < candles.length - leftRight; i++) {
-    const isHigh = candles.slice(i - leftRight, i + leftRight + 1).every((c, idx) => idx === leftRight || c.high <= candles[i].high);
-    const isLow = candles.slice(i - leftRight, i + leftRight + 1).every((c, idx) => idx === leftRight || c.low >= candles[i].low);
-    if (isHigh) swings.push({ index: i, price: candles[i].high, type: 'HIGH' });
-    if (isLow) swings.push({ index: i, price: candles[i].low, type: 'LOW' });
+function calculateEMA(candles: Candle[], period = 50): number[] {
+  const k = 2 / (period + 1);
+  const ema = [candles[0].close];
+  for (let i = 1; i < candles.length; i++) {
+    ema.push(candles[i].close * k + ema[i - 1] * (1 - k));
+  }
+  return ema;
+}
+
+function getSwings(candles: Candle[], radius = 3) {
+  const swings: { idx: number; price: number; type: 'HIGH' | 'LOW' }[] = [];
+  for (let i = radius; i < candles.length - radius; i++) {
+    let isHigh = true;
+    let isLow = true;
+    for (let j = 1; j <= radius; j++) {
+      if (candles[i - j].high >= candles[i].high || candles[i + j].high >= candles[i].high) isHigh = false;
+      if (candles[i - j].low <= candles[i].low || candles[i + j].low <= candles[i].low) isLow = false;
+    }
+    if (isHigh) swings.push({ idx: i, price: candles[i].high, type: 'HIGH' });
+    if (isLow) swings.push({ idx: i, price: candles[i].low, type: 'LOW' });
   }
   return swings;
 }
 
-function detectFVGs(candles: Candle[], startIdx: number, endIdx: number) {
-  const fvgs: { startIndex: number; top: number; bottom: number }[] = [];
-  for (let i = startIdx; i < endIdx - 2; i++) {
-    const c1 = candles[i];
-    const c3 = candles[i + 2];
-    if (c1 && c3 && c1.high < c3.low) {
-      fvgs.push({ startIndex: i, top: c3.low, bottom: c1.high });
-    }
-  }
-  return fvgs;
-}
-
 function analyzeICTSetup(candles: Candle[]) {
-  if (candles.length < 40) return null;
-  const swings = findSwings(candles, 2);
-  if (swings.length < 4) return null;
+  if (candles.length < 55) return null;
 
-  const currentPrice = candles[candles.length - 1].close;
-  const recentSwings = swings.slice(-15);
+  const currentIdx = candles.length - 1;
+  const currentCandle = candles[currentIdx];
+  const ema50 = calculateEMA(candles, 50);
 
-  for (let i = recentSwings.length - 1; i >= 1; i--) {
-    const sweepNode = recentSwings[i];
-    if (sweepNode.type === 'LOW') {
-      let prevLow: { index: number; price: number } | null = null;
-      let mssHigh: { index: number; price: number } | null = null;
+  // 1. الاتجاه العام: السعر أعلى متوسط 50 شمعة
+  if (currentCandle.close < ema50[currentIdx]) return null;
 
-      for (let j = i - 1; j >= 0; j--) {
-        if (recentSwings[j].type === 'LOW' && sweepNode.price < recentSwings[j].price) {
-          prevLow = recentSwings[j];
-          let maxPrice = -Infinity;
-          for (let k = j; k <= i; k++) {
-            if (recentSwings[k].type === 'HIGH' && recentSwings[k].price > maxPrice) {
-              maxPrice = recentSwings[k].price;
-              mssHigh = recentSwings[k];
-            }
-          }
-          break;
-        }
-      }
+  const swings = getSwings(candles, 3);
+  const lastLows = swings.filter(s => s.type === 'LOW');
+  const lastHighs = swings.filter(s => s.type === 'HIGH');
 
-      if (prevLow && mssHigh) {
-        let mssIdx = -1;
-        let highestAfterMSS = sweepNode.price;
+  if (lastLows.length < 2 || lastHighs.length < 1) return null;
 
-        for (let c = sweepNode.index + 1; c < candles.length; c++) {
-          if (candles[c].high > highestAfterMSS) highestAfterMSS = candles[c].high;
-          if (mssIdx === -1 && candles[c].close > mssHigh.price) {
-            mssIdx = c;
-          }
-        }
+  const prevMajorLow = lastLows[lastLows.length - 2];
+  const sweepLow = lastLows[lastLows.length - 1];
+  const recentHigh = lastHighs[lastHighs.length - 1];
 
-        if (mssIdx !== -1) {
-          const impulseLow = sweepNode.price;
-          const equilibrium = impulseLow + (highestAfterMSS - impulseLow) * 0.5;
+  // 2. التحقق من سحب السيولة الرئيسي
+  const swept = sweepLow.price < prevMajorLow.price && sweepLow.idx > prevMajorLow.idx;
+  if (!swept) return null;
 
-          const fvgs = detectFVGs(candles, sweepNode.index, mssIdx);
-          const validFVG = fvgs.reverse().find(f => f.top <= equilibrium);
+  // 3. تأكيد كسر الهيكل (MSS) بإغلاق جسم شمعة صاعدة
+  if (recentHigh.idx <= sweepLow.idx) return null;
+  const mssBreak = currentCandle.close > recentHigh.price;
+  if (!mssBreak) return null;
 
-          if (validFVG) {
-            if (currentPrice <= equilibrium && currentPrice >= validFVG.bottom * 0.995) {
-              const entryPrice = validFVG.top;
-              const stopLoss = parseFloat((impulseLow * 0.997).toFixed(6));
-              const risk = entryPrice - stopLoss;
-              const riskPct = parseFloat(((risk / entryPrice) * 100).toFixed(2));
-
-              if (risk > 0 && riskPct <= MAX_SL_PCT) {
-                const tp1 = parseFloat(Math.max(mssHigh.price, entryPrice + risk * 1.0).toFixed(6));
-                const rr = (tp1 - entryPrice) / risk;
-                const discountDepth = ((equilibrium - entryPrice) / equilibrium) * 100;
-
-                let score = 50;
-                score += Math.min(rr * 10, 30);
-                score += Math.min(discountDepth * 5, 20);
-                if (riskPct <= 2.5) score += 10;
-
-                return {
-                  entryPrice,
-                  stopLoss,
-                  tp1,
-                  riskPct,
-                  score: parseFloat(score.toFixed(2)),
-                  fvgTop: validFVG.top,
-                  fvgBottom: validFVG.bottom
-                };
-              }
-            }
-          }
-        }
-      }
+  // 4. استخراج الفراغ السعري (Bullish FVG)
+  let fvg: { top: number; bottom: number } | null = null;
+  for (let k = sweepLow.idx; k < currentIdx - 1; k++) {
+    if (candles[k] && candles[k + 2] && candles[k].high < candles[k + 2].low) {
+      fvg = { top: candles[k + 2].low, bottom: candles[k].high };
     }
   }
-  return null;
+  if (!fvg) return null;
+
+  // حساب منطقة التوازن (Equilibrium 50%) وعمق الخصم
+  const impulseHigh = currentCandle.high;
+  const impulseLow = sweepLow.price;
+  const equilibrium = impulseLow + (impulseHigh - impulseLow) * 0.5;
+
+  // قبول الدخول إذا كان الـ FVG داخل منطقة الخصم
+  if (fvg.top > equilibrium) return null;
+
+  const entryPrice = fvg.top;
+  const stopLoss = parseFloat((sweepLow.price * 0.993).toFixed(6));
+  const risk = entryPrice - stopLoss;
+  const riskPct = parseFloat(((risk / entryPrice) * 100).toFixed(2));
+
+  if (risk <= 0 || riskPct > MAX_SL_PCT || riskPct < MIN_SL_PCT) return null;
+
+  // حساب عمق الخصم للمفاضلة بين العملات
+  const discountDepth = parseFloat((((equilibrium - entryPrice) / (equilibrium - impulseLow)) * 100).toFixed(2));
+  const tp1 = parseFloat((entryPrice + risk * 2.0).toFixed(6));
+
+  return {
+    entryPrice,
+    stopLoss,
+    tp1,
+    riskPct,
+    discountDepth,
+    fvgTop: fvg.top,
+    fvgBottom: fvg.bottom
+  };
 }
 
 // ==========================================
-// 3. المحفظة والمراقبة والتنفيذ الفعلي
+// 3. إدارة رأس المال والمتابعة اللحظية
 // ==========================================
-async function getAccountBalance(): Promise<number> {
+async function getTotalCumulativeEquity(): Promise<number> {
   const initialEquity = 500.0;
   const closedTrades = await TradeICT4H.find({ status: { $in: ['WIN', 'LOSS'] } });
   const totalRealizedPnl = closedTrades.reduce((sum, t) => sum + (t.pnlDollars || 0), 0);
@@ -223,6 +213,20 @@ async function monitorActiveTrades() {
       const candles = await getBinanceKlines(trade.symbol, '1m', 2);
       if (candles.length === 0) continue;
       const currentPrice = candles[candles.length - 1].close;
+
+      if (!trade.isTriggered) {
+        if (currentPrice <= trade.entryPrice) {
+          trade.isTriggered = true;
+          await trade.save();
+        } else if (currentPrice >= trade.tp1) {
+          trade.status = 'CANCELLED';
+          trade.exitTime = new Date();
+          await trade.save();
+          continue;
+        } else {
+          continue;
+        }
+      }
 
       let closed = false;
       let outcome: 'WIN' | 'LOSS' = 'WIN';
@@ -246,13 +250,11 @@ async function monitorActiveTrades() {
       }
 
       if (closed) {
-        // تنفيذ أمر بيع الإغلاق في باينانس Testnet إذا وُجدت كمية
         if (trade.quantity && trade.quantity > 0) {
           await placeMarketSellOrder(trade.symbol, trade.quantity);
         }
 
         await trade.save();
-        const newBalance = await getAccountBalance();
 
         await sendTradeOutcomeToTelegram({
           symbol: trade.symbol,
@@ -262,7 +264,6 @@ async function monitorActiveTrades() {
           pnlDollars: trade.pnlDollars || 0,
           pnlPct: trade.pnlPct || 0,
           allocatedCapital: trade.allocatedCapital,
-          currentBalance: newBalance,
         });
       }
     } catch (err: any) {
@@ -273,7 +274,7 @@ async function monitorActiveTrades() {
 }
 
 // ==========================================
-// 4. الدالة الرئيسية لدورة الفحص
+// 4. دورة الفحص واختيار الصفقات
 // ==========================================
 export async function runICT4HScannerJob() {
   await monitorActiveTrades();
@@ -288,8 +289,8 @@ export async function runICT4HScannerJob() {
     const isAlreadyOpen = await TradeICT4H.exists({ symbol, status: 'ACTIVE' });
     if (isAlreadyOpen) continue;
 
-    const candles = await getBinanceKlines(symbol, TIMEFRAME, 60);
-    if (candles.length < 40) continue;
+    const candles = await getBinanceKlines(symbol, TIMEFRAME, 100);
+    if (candles.length < 55) continue;
 
     const setup = analyzeICTSetup(candles);
     if (setup) {
@@ -299,13 +300,15 @@ export async function runICT4HScannerJob() {
   }
 
   if (candidates.length > 0) {
-    candidates.sort((a, b) => b.score - a.score);
+    // المفاضلة وترتيب الصفقات تنازلياً حسب أعمق نسبة خصم (Discount Depth)
+    candidates.sort((a, b) => b.discountDepth - a.discountDepth);
+
     const selectedTrades = candidates.slice(0, availableSlots);
-    const totalEquity = await getAccountBalance();
-    const tradeAllocation = totalEquity * POSITION_SIZE_RATIO;
+    const totalEquity = await getTotalCumulativeEquity();
+    // تخصيص 30% دائماً من إجمالي رأس المال التراكمي
+    const tradeAllocation = parseFloat((totalEquity * POSITION_SIZE_RATIO).toFixed(2));
 
     for (const trade of selectedTrades) {
-      // تنفيذ أمر شراء حقيقي في باينانس Testnet
       const buyRes = await placeLimitBuyOrder(trade.symbol, trade.entryPrice, tradeAllocation);
 
       await TradeICT4H.create({
@@ -314,10 +317,11 @@ export async function runICT4HScannerJob() {
         stopLoss: trade.stopLoss,
         tp1: trade.tp1,
         riskPct: trade.riskPct,
-        score: trade.score,
-        allocatedCapital: parseFloat(tradeAllocation.toFixed(2)),
+        allocatedCapital: tradeAllocation,
+        discountDepth: trade.discountDepth,
         quantity: buyRes.quantity || 0,
         binanceOrderId: buyRes.orderId || undefined,
+        isTriggered: false,
         status: 'ACTIVE',
         entryTime: new Date(),
       });
@@ -325,17 +329,14 @@ export async function runICT4HScannerJob() {
       let chartBuffer: Buffer | undefined = undefined;
       try {
         const risk = trade.entryPrice - trade.stopLoss;
-        const calcTp2 = parseFloat((trade.entryPrice + risk * 1.5).toFixed(6));
-        const calcTp3 = parseFloat((trade.entryPrice + risk * 2.0).toFixed(6));
-
         chartBuffer = generateChartPngBuffer(trade.candles as unknown as CandlePlotData[], {
           symbol: trade.symbol,
           timeframe: '4h',
           entry: trade.entryPrice,
           stopLoss: trade.stopLoss,
           tp1: trade.tp1,
-          tp2: calcTp2,
-          tp3: calcTp3,
+          tp2: parseFloat((trade.entryPrice + risk * 2.5).toFixed(6)),
+          tp3: parseFloat((trade.entryPrice + risk * 3.5).toFixed(6)),
           fvgTop: trade.fvgTop,
           fvgBottom: trade.fvgBottom,
         });
@@ -348,7 +349,6 @@ export async function runICT4HScannerJob() {
           stopLoss: trade.stopLoss,
           tp1: trade.tp1,
           riskPct: trade.riskPct,
-          score: trade.score,
           allocatedCapital: tradeAllocation,
         },
         chartBuffer
