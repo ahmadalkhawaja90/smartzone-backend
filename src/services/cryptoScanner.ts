@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Opportunity } from '../models/Opportunity';
+import mongoose, { Schema, Document, model } from 'mongoose';
 import { sendOpportunityToTelegram } from './telegramBot';
 import { generateChartPngBuffer, CandlePlotData } from './chartGenerator';
 import { placeLimitBuyOrder } from './binanceClient';
@@ -13,9 +13,74 @@ export interface CandleData {
   volume: number;
 }
 
-// ==========================================================
-// 1. جلب قائمة أفضل 60 زوج USDT نشط
-// ==========================================================
+const MAX_CONCURRENT_TRADES = 5;
+const POSITION_SIZE_RATIO = 0.10; // 10% لكل صفقة تراكمية
+
+// ==========================================
+// 1. قاعدة البيانات (كولكشن مستقل: trades_ict_1h)
+// ==========================================
+export interface ICryptoTrade1H extends Document {
+  symbol: string;
+  baseAsset: string;
+  strategy: string;
+  timeframe: string;
+  entryZone: { min: number; max: number };
+  stopLoss: number;
+  targets: { tp1: number; tp2: number; tp3: number };
+  allocatedCapital: number;
+  quantity?: number;
+  orderId?: string;
+  status: 'PENDING_ENTRY' | 'ACTIVE' | 'BREAK_EVEN' | 'TP2_SECURED' | 'CLOSED_WIN' | 'CLOSED_LOSS' | 'CANCELLED';
+  pnlDollars?: number;
+  pnlPct?: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const CryptoTrade1HSchema = new Schema<ICryptoTrade1H>({
+  symbol: { type: String, required: true, index: true },
+  baseAsset: { type: String, required: true },
+  strategy: { type: String, default: 'ICT_1H' },
+  timeframe: { type: String, default: '1h' },
+  entryZone: {
+    min: { type: Number, required: true },
+    max: { type: Number, required: true }
+  },
+  stopLoss: { type: Number, required: true },
+  targets: {
+    tp1: { type: Number, required: true },
+    tp2: { type: Number, required: true },
+    tp3: { type: Number, required: true }
+  },
+  allocatedCapital: { type: Number, required: true },
+  quantity: { type: Number, default: 0 },
+  orderId: { type: String },
+  status: {
+    type: String,
+    enum: ['PENDING_ENTRY', 'ACTIVE', 'BREAK_EVEN', 'TP2_SECURED', 'CLOSED_WIN', 'CLOSED_LOSS', 'CANCELLED'],
+    default: 'PENDING_ENTRY',
+    index: true
+  },
+  pnlDollars: { type: Number, default: 0 },
+  pnlPct: { type: Number, default: 0 },
+}, { timestamps: true });
+
+export const CryptoTrade1H = mongoose.models.CryptoTrade1H || 
+  model<ICryptoTrade1H>('CryptoTrade1H', CryptoTrade1HSchema, 'trades_ict_1h');
+
+// ==========================================
+// 2. إدارة المحفظة التراكمية (الأساس 500 دولار)
+// ==========================================
+async function getICT1HAccountBalance(): Promise<number> {
+  const initialEquity = 500.0;
+  const closedTrades = await CryptoTrade1H.find({ status: { $in: ['CLOSED_WIN', 'CLOSED_LOSS'] } });
+  const totalRealizedPnl = closedTrades.reduce((sum, t) => sum + (t.pnlDollars || 0), 0);
+  return Math.max(10, initialEquity + totalRealizedPnl);
+}
+
+// ==========================================
+// 3. جلب قائمة العملات والشموع
+// ==========================================
 const CORE_TOP_PAIRS = [
   'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 
   'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'NEARUSDT', 'DOTUSDT',
@@ -45,85 +110,37 @@ export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
       .map((item: any) => item.symbol);
 
     return Array.from(new Set([...CORE_TOP_PAIRS, ...dynamicTop])).slice(0, 60);
-  } catch (error) {
+  } catch {
     return CORE_TOP_PAIRS;
   }
 };
 
-// ==========================================================
-// 2. جلب الشموع البيانية
-// ==========================================================
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const toBybitInterval = (interval: string): string => {
-  if (interval === '1h') return '60';
-  if (interval === '4h') return '240';
-  return interval;
-};
-
-const toOkxInterval = (interval: string): string => {
-  if (interval === '1h') return '1H';
-  if (interval === '4h') return '4H';
-  return interval;
-};
-
-const fetchCandlesFromBybit = async (symbol: string, interval: string, limit: number): Promise<CandleData[]> => {
-  const res = await axios.get('https://api.bybit.com/v5/market/kline', {
-    params: { category: 'spot', symbol, interval: toBybitInterval(interval), limit },
-    headers: { 'User-Agent': 'Mozilla/5.0' },
-    timeout: 8000,
-  });
-
-  if (!res.data.result?.list?.length) throw new Error('Bybit data empty');
-
-  return res.data.result.list
-    .map((c: any) => ({
-      openTime: parseInt(c[0]),
-      open: parseFloat(c[1]),
-      high: parseFloat(c[2]),
-      low: parseFloat(c[3]),
-      close: parseFloat(c[4]),
-      volume: parseFloat(c[5]),
-    }))
-    .reverse();
-};
-
-const fetchCandlesFromOkx = async (symbol: string, interval: string, limit: number): Promise<CandleData[]> => {
-  const okxSymbol = symbol.replace('USDT', '') + '-USDT';
-  const res = await axios.get('https://www.okx.com/api/v5/market/candles', {
-    params: { instId: okxSymbol, bar: toOkxInterval(interval), limit },
-    headers: { 'User-Agent': 'Mozilla/5.0' },
-    timeout: 8000,
-  });
-
-  if (!res.data?.data?.length) throw new Error('OKX data empty');
-
-  return res.data.data
-    .map((c: any) => ({
-      openTime: parseInt(c[0]),
-      open: parseFloat(c[1]),
-      high: parseFloat(c[2]),
-      low: parseFloat(c[3]),
-      close: parseFloat(c[4]),
-      volume: parseFloat(c[5]),
-    }))
-    .reverse();
-};
 
 const fetchCandles = async (symbol: string, interval = '1h', limit = 100): Promise<CandleData[]> => {
   try {
-    return await fetchCandlesFromBybit(symbol, interval, limit);
+    const res = await axios.get('https://api.bybit.com/v5/market/kline', {
+      params: { category: 'spot', symbol, interval: '60', limit },
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      timeout: 8000,
+    });
+    const list = res.data.result?.list;
+    if (!list) return [];
+    return list.map((c: any) => ({
+      openTime: parseInt(c[0]),
+      open: parseFloat(c[1]),
+      high: parseFloat(c[2]),
+      low: parseFloat(c[3]),
+      close: parseFloat(c[4]),
+      volume: parseFloat(c[5]),
+    })).reverse();
   } catch {
-    try {
-      return await fetchCandlesFromOkx(symbol, interval, limit);
-    } catch {
-      return [];
-    }
+    return [];
   }
 };
 
 // ==========================================
-// 3. أدوات التحليل المؤسسي
+// 4. أدوات وخوارزمية تحليل ICT على فريم 1H
 // ==========================================
 interface SwingPoint {
   index: number;
@@ -163,10 +180,7 @@ const detectFVGs = (candles: CandleData[], startIdx: number, endIdx: number): FV
   return fvgs;
 };
 
-// ==========================================
-// 4. خوارزمية تحليل ICT الذكية (بحث مرن للشراء فقط)
-// ==========================================
-export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe: string) => {
+export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe = '1h') => {
   if (candles.length < 50) return null;
 
   const swings = findSwings(candles, 2);
@@ -174,7 +188,6 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
 
   const currentPrice = candles[candles.length - 1].close;
   const baseAsset = symbol.replace('USDT', '');
-  
   const recentSwings = swings.slice(-15);
 
   for (let i = recentSwings.length - 1; i >= 2; i--) {
@@ -245,25 +258,25 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
                 const tp3 = parseFloat(Math.max(rawFibTp3, minTp3).toFixed(6));
 
                 return {
-                  opportunity: {
-                    symbol, baseAsset, market: 'crypto' as const, timeframe,
-                    type: 'SPOT_BUY' as const, currentPrice,
+                  tradeData: {
+                    symbol,
+                    baseAsset,
+                    timeframe,
                     entryZone: { min: parseFloat(validFVG.bottom.toFixed(6)), max: parseFloat(validFVG.top.toFixed(6)) },
-                    stopLoss, targets: { tp1, tp2, tp3 },
-                    riskRewardRatio: '1:3.0', confluenceScore: 98,
-                    fulfilledConditions: [
-                      { title: 'Liquidity Sweep', description: `سحب سيولة القاع $${prevLow.price}` },
-                      { title: 'True MSS', description: `كسر حقيقي للهيكل فوق $${mssHigh.price}` },
-                      { title: 'Fresh Discount FVG', description: `عودة السعر لاختبار فجوة غير مستهلكة` },
-                    ],
-                    analysisReasons: {
-                      entryReason: `شراء من FVG مثالية في منطقة الخصم.`,
-                      stopLossReason: `وقف أسفل قاع السحب $${stopLoss}.`,
-                      takeProfitReason: `TP1 (سيولة BSL): $${tp1} | TP2 (فيبو 1.272): $${tp2} | TP3 (فيبو 1.618): $${tp3}`
-                    },
-                    status: 'PENDING_ENTRY' as const,
+                    stopLoss,
+                    targets: { tp1, tp2, tp3 },
                   },
-                  chartOptions: { symbol, timeframe, entry: entryPrice, stopLoss, tp1, tp2, tp3, fvgTop: validFVG.top, fvgBottom: validFVG.bottom },
+                  chartOptions: {
+                    symbol,
+                    timeframe,
+                    entry: entryPrice,
+                    stopLoss,
+                    tp1,
+                    tp2,
+                    tp3,
+                    fvgTop: validFVG.top,
+                    fvgBottom: validFVG.bottom
+                  },
                 };
               }
             }
@@ -276,84 +289,98 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
 };
 
 // ==========================================
-// 5. تشغيل المسح الدوري الشامل مع إرسال الأوامر المعلقة
+// 5. تشغيل المسح الدوري والتنفيذ التراكمي على فريم 1H
 // ==========================================
 export const runFullCryptoScan = async () => {
-  const targetTimeframes = ['1h', '4h'];
-  console.log('🚀 [Crypto Scanner] بدء دورة الفحص لأفضل 60 عملة رقمية (1h, 4h)...');
+  console.log('🚀 [ICT 1H Scanner] بدء دورة الفحص لأفضل 60 عملة رقمية (1h)...');
+
+  // فحص السقف الأقصى للصفقات المفتوحة
+  const activeCount = await CryptoTrade1H.countDocuments({
+    status: { $in: ['PENDING_ENTRY', 'ACTIVE', 'BREAK_EVEN', 'TP2_SECURED'] }
+  });
+
+  if (activeCount >= MAX_CONCURRENT_TRADES) {
+    console.log(`ℹ️ [ICT 1H] الحد الأقصى للصفقات المتزامنة مستوفى (${activeCount}/${MAX_CONCURRENT_TRADES}).`);
+    return;
+  }
 
   let symbols: string[] = [];
   try {
     symbols = await getActiveUSDTSpotPairs();
     console.log(`🔍 تم تثبيت ${symbols.length} زوج من نخبة العملات للفحص.`);
-  } catch (error) {
+  } catch {
     return;
   }
 
   let discoveredCount = 0;
-  // قفل محلي للدورة لمنع إرسال نفس العملة على فريمين مختلفين
-  const scannedInThisRun = new Set<string>();
 
   for (const symbol of symbols) {
-    for (const tf of targetTimeframes) {
-      try {
-        if (scannedInThisRun.has(symbol)) {
-          continue; // تم رصد العملة بالفعل في نفس الدورة
+    try {
+      const currentActive = await CryptoTrade1H.countDocuments({
+        status: { $in: ['PENDING_ENTRY', 'ACTIVE', 'BREAK_EVEN', 'TP2_SECURED'] }
+      });
+      if (currentActive >= MAX_CONCURRENT_TRADES) break;
+
+      const candles = await fetchCandles(symbol, '1h', 100);
+      if (candles.length < 40) continue;
+
+      const result = analyzeICTSetup(candles, symbol, '1h');
+
+      if (result) {
+        // حماية من التكرار خلال 12 ساعة
+        const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
+        const existing = await CryptoTrade1H.findOne({
+          symbol,
+          $or: [
+            { status: { $in: ['PENDING_ENTRY', 'ACTIVE', 'BREAK_EVEN', 'TP2_SECURED'] } },
+            { createdAt: { $gte: twelveHoursAgo } }
+          ]
+        });
+
+        if (existing) continue;
+
+        // حساب الحصة التراكمية (10% من الرصيد الصافي)
+        const currentEquity = await getICT1HAccountBalance();
+        const tradeAllocation = currentEquity * POSITION_SIZE_RATIO;
+        const entryPrice = result.tradeData.entryZone.max;
+
+        // تنفيذ أمر شراء حقيقي في باينانس Testnet
+        const orderResult = await placeLimitBuyOrder(symbol, entryPrice, tradeAllocation);
+
+        let orderId: string | undefined = undefined;
+        let quantity: number = 0;
+
+        if (orderResult.success && orderResult.orderId) {
+          orderId = orderResult.orderId;
+          quantity = orderResult.quantity || 0;
+          console.log(`⚡ [Binance Testnet] تم وضع أمر شراء لـ ${symbol} بحصة $${tradeAllocation.toFixed(2)} (Order ID: ${orderId})`);
+        } else {
+          console.warn(`⚠️ [Binance Testnet] تعذر تنفيذ الشراء لـ ${symbol}: ${orderResult.error}`);
         }
 
-        const candles = await fetchCandles(symbol, tf, 100);
-        if (candles.length < 40) continue;
+        const createdTrade = await CryptoTrade1H.create({
+          ...result.tradeData,
+          allocatedCapital: parseFloat(tradeAllocation.toFixed(2)),
+          quantity,
+          orderId,
+          status: 'PENDING_ENTRY',
+        });
 
-        const result = analyzeICTSetup(candles, symbol, tf);
+        discoveredCount++;
+        console.log(`🎯 [فرصة ICT 1H رُصدت]: ${symbol} - تم التوثيق في trades_ict_1h.`);
 
-        if (result) {
-          // 🛑 قفل مانع التكرار الصارم:
-          // 1. استبعاد أي صفقة ما زالت مفتوحة أو معلقة
-          // 2. استبعاد أي توصية لنفس العملة تم إرسالها خلال آخر 12 ساعة حتى لو أغلقت أو أُلغيت
-          const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
-          const existing = await Opportunity.findOne({
-            symbol,
-            $or: [
-              { status: { $in: ['PENDING_ENTRY', 'ACTIVE', 'BREAK_EVEN', 'TP2_SECURED'] } },
-              { createdAt: { $gte: twelveHoursAgo } }
-            ]
-          });
+        let chartBuffer: Buffer | undefined = undefined;
+        try {
+          chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
+        } catch {}
 
-          if (existing || scannedInThisRun.has(symbol)) {
-            continue; // تخطي العملة فوراً وعدم إرسالها
-          }
-
-          scannedInThisRun.add(symbol);
-
-          const entryPrice = result.opportunity.entryZone.max;
-          const orderResult = await placeLimitBuyOrder(symbol, entryPrice);
-
-          let orderId: string | undefined = undefined;
-          if (orderResult.success && orderResult.orderId) {
-            orderId = orderResult.orderId;
-            console.log(`⚡ [Binance Testnet] تم وضع أمر شراء معلق لـ ${symbol} بسعر $${entryPrice} (Order ID: ${orderId})`);
-          } else {
-            console.warn(`⚠️ [Binance Testnet] لم يتم إرسال الطلب لـ ${symbol}: ${orderResult.error}`);
-          }
-
-          const createdOpp = await Opportunity.create({
-            ...result.opportunity,
-            orderId,
-          });
-
-          discoveredCount++;
-          console.log(`🎯 [فرصة ICT رُصدت]: ${symbol} [${tf}] - تم الحفظ والإرسال.`);
-
-          const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
-
-          await sendOpportunityToTelegram(createdOpp, chartBuffer);
-        }
-      } catch (error) {
-        // Continue loop
+        await sendOpportunityToTelegram(createdTrade as any, chartBuffer);
       }
-      await sleep(150);
+    } catch (err: any) {
+      console.error(`⚠️ خطأ فحص عملة ${symbol}:`, err.message);
     }
+    await sleep(120);
   }
 
-  console.log(`✨ [Crypto Scanner] اكتمل الفحص: إجمالي المحاولات ${symbols.length * 2} | رُصدت ${discoveredCount} فرصة.`);
+  console.log(`✨ [ICT 1H Scanner] اكتمل الفحص: رُصدت ${discoveredCount} فرصة.`);
 };
