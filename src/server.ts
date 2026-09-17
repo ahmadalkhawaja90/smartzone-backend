@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { connectDB } from './config/db';
 import { initOpportunityScheduler } from './services/scheduler';
+import { initTelegramBot } from './services/telegramBot';
 
 // تحميل متغيرات البيئة
 dotenv.config();
@@ -29,11 +30,14 @@ const startServer = async () => {
     // 1. الاتصال بقاعدة البيانات
     await connectDB();
 
-    // 2. تشغيل السيرفر
+    // 2. تفعيل بوت التلجرام للاستماع للأوامر (/balance)
+    initTelegramBot();
+
+    // 3. تشغيل السيرفر
     app.listen(PORT, () => {
       console.log(`📡 Server is running on port: ${PORT}`);
 
-      // 3. تشغيل جدول الفحص الآلي (Crypto & Harmonics)
+      // 4. تشغيل جدول الفحص الآلي (Crypto & Harmonics)
       initOpportunityScheduler();
     });
   } catch (error) {
