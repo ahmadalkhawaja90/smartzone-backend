@@ -1,16 +1,16 @@
 import cron from 'node-cron';
 import { runFullCryptoScan } from './cryptoScanner';
-import { scanAllHarmonics } from './harmonicsScanner';
 import { runLiveTrackerCycle } from './liveTracker';
 import { runWyckoffScannerJob } from './wyckoffScanner';
+import { runICT4HScannerJob } from './scannerICT4H';
 
 // أعلام لمنع تداخل عمليات الفحص والمراقبة (Concurrency Locks)
 let isCryptoScanning = false;
-let isHarmonicScanning = false;
 let isTrackerRunning = false;
 let isWyckoffScanning = false;
+let isICT4HScanning = false;
 
-// دالة تنفيذ فحص الكريبتو الأساسي
+// دالة تنفيذ فحص الكريبتو الأساسي (1H)
 const executeCryptoScan = async () => {
   if (isCryptoScanning) {
     console.warn('⚠️ فحص الكريبتو السابق لا يزال قيد التنفيذ، تم تخطي هذه الدورة.');
@@ -18,28 +18,12 @@ const executeCryptoScan = async () => {
   }
   isCryptoScanning = true;
   try {
-    console.log('🔄 بدء فحص سوق العملات الرقمية (Crypto ICT Scanner)...');
+    console.log('🔄 بدء فحص سوق العملات الرقمية (Crypto ICT 1H)...');
     await runFullCryptoScan();
   } catch (error: any) {
     console.error('❌ خطأ أثناء تنفيذ فحص العملات الرقمية:', error.message || error);
   } finally {
     isCryptoScanning = false;
-  }
-};
-
-// دالة تنفيذ فحص نماذج الهارمونيك
-const executeHarmonicScan = async () => {
-  if (isHarmonicScanning) {
-    console.warn('⚠️ فحص الهارمونيك السابق لا يزال قيد التنفيذ، تم تخطي هذه الدورة.');
-    return;
-  }
-  isHarmonicScanning = true;
-  try {
-    await scanAllHarmonics();
-  } catch (error: any) {
-    console.error('❌ خطأ أثناء تنفيذ فحص الهارمونيك:', error.message || error);
-  } finally {
-    isHarmonicScanning = false;
   }
 };
 
@@ -56,15 +40,15 @@ const executeLiveTracker = async () => {
   }
 };
 
-// دالة تنفيذ فحص السوينغ المؤسسي (Wyckoff + ICT) للقناة الخاصة
+// دالة تنفيذ فحص السوينغ (وايكوف 4H)
 const executeWyckoffScan = async () => {
   if (isWyckoffScanning) {
-    console.warn('⚠️ فحص السوينغ السابق لا يزال قيد التنفيذ، تم تخطي هذه الدورة.');
+    console.warn('⚠️ فحص وايكوف السابق لا يزال قيد التنفيذ، تم تخطي هذه الدورة.');
     return;
   }
   isWyckoffScanning = true;
   try {
-    console.log('💎 بدء فحص نماذج السوينغ المؤسسي (Wyckoff + ICT 4H)...');
+    console.log('💎 بدء فحص نماذج السوينغ المؤسسي (Wyckoff 4H)...');
     await runWyckoffScannerJob();
   } catch (error: any) {
     console.error('❌ خطأ أثناء تنفيذ فحص السوينغ المؤسسي:', error.message || error);
@@ -73,31 +57,42 @@ const executeWyckoffScan = async () => {
   }
 };
 
-export const initOpportunityScheduler = () => {
-  console.log('⏰ تم تهيئة مجدول الفرص والمراقبة الحية (ICT Engine, Harmonics, Live Tracker & Wyckoff Swing)...');
+// دالة تنفيذ محرك ICT 4H الجديد (فحص ومتابعة الصفقات وحساب التراكمي)
+const executeICT4HScan = async () => {
+  if (isICT4HScanning) {
+    return;
+  }
+  isICT4HScanning = true;
+  try {
+    await runICT4HScannerJob();
+  } catch (error: any) {
+    console.error('❌ خطأ أثناء تنفيذ دورة ICT 4H:', error.message || error);
+  } finally {
+    isICT4HScanning = false;
+  }
+};
 
-  // 1. تشغيل أولي بتسلسل زمني لتجنب الضغط على الـ API
+export const initOpportunityScheduler = () => {
+  console.log('⏰ تم تهيئة مجدول الفرص والمراقبة الحية (ICT 1H, Wyckoff, Live Tracker & ICT 4H Engine)...');
+
+  // 1. تشغيل أولي بتسلسل زمني مدروس لتجنب تجاوز حدود الـ API
   setTimeout(() => executeCryptoScan(), 2000);
   setTimeout(() => executeLiveTracker(), 5000);
-  setTimeout(() => executeHarmonicScan(), 10000);
+  setTimeout(() => executeICT4HScan(), 10000);
   setTimeout(() => executeWyckoffScan(), 20000);
 
-  // 2. المراقبة اللحظية للصفقات والأوامر المعلقة (كل دقيقة)
+  // 2. المراقبة اللحظية للصفقات المفتوحة وتحديث أهداف/وقف ICT 4H (كل دقيقة)
   cron.schedule('* * * * *', async () => {
     await executeLiveTracker();
+    await executeICT4HScan();
   });
 
-  // 3. فحص العملات الرقمية الأساسية لاقتناص الفرص كل 10 دقائق
+  // 3. فحص العملات الرقمية للاستراتيجية الأساسية (ICT 1H) كل 10 دقائق
   cron.schedule('*/10 * * * *', async () => {
     await executeCryptoScan();
   });
 
-  // 4. فحص نماذج الهارمونيك كل 15 دقيقة
-  cron.schedule('*/15 * * * *', async () => {
-    await executeHarmonicScan();
-  });
-
-  // 5. فحص نماذج السوينغ المؤسسي (Wyckoff + ICT) كل ساعة عند الدقيقة 5
+  // 4. فحص نماذج وايكوف كل ساعة عند الدقيقة 5
   cron.schedule('5 * * * *', async () => {
     await executeWyckoffScan();
   });
