@@ -16,6 +16,8 @@ export interface ICT4HSignal {
   entryPrice: number;
   stopLoss: number;
   tp1: number;
+  tp2?: number;
+  tp3?: number;
   riskPct: number;
   score: number;
   allocatedCapital: number;
@@ -23,15 +25,25 @@ export interface ICT4HSignal {
   fvgBottom?: number;
 }
 
+export interface StrategyStats {
+  stopLossCount: number;
+  tp1Count: number;
+  tp1ThenBECount: number;
+  tp3Count: number;
+  totalClosed: number;
+  winRatePct: number;
+}
+
 export interface TradeOutcomeAlert {
   symbol: string;
-  outcome: 'WIN' | 'LOSS';
+  outcome: 'STOP_LOSS' | 'TP1' | 'TP1_THEN_BE' | 'TP3' | 'WIN' | 'LOSS';
   entryPrice: number;
   exitPrice: number;
   pnlDollars: number;
   pnlPct: number;
   allocatedCapital: number;
   currentBalance: number;
+  stats?: StrategyStats;
 }
 
 // 1. إرسال إشعار فتح صفقة جديدة
@@ -56,10 +68,9 @@ export const sendICT4HSignalToTelegram = async (
 ═════════════════════════
 🎯 *سعر الدخول (FVG Entry):* \`${signal.entryPrice}\`
 🛑 *وقف الخسارة (Sweep Low):* \`${signal.stopLoss}\` (\`-${signal.riskPct}%\`) ❌
-🏁 *الهدف الأول (Target 1):* \`${signal.tp1}\` 🎯
-📊 *نسبة العائد إلى المخاطرة (R:R):* \`1:${rr}\`
-═════════════════════════
-💼 *إدارة رأس المال والمحفظة:*
+🏁 *الهدف الأول (Target 1):* \`${signal.tp1}\` 🎯 (R:R = 1:${rr})
+${signal.tp2 ? `🔹 *الهدف الثاني (Target 2):* \`${signal.tp2}\` 🚀\n` : ''}${signal.tp3 ? `👑 *الهدف الثالث (Target 3):* \`${signal.tp3}\` 💎\n` : ''}═════════════════════════
+💼 *إدارة رأس المال التراكمي:*
 💵 *الحصة المخصصة (30%):* \`$${signal.allocatedCapital.toFixed(2)}\`
 🛡️ *أقصى مخاطرة مسموحة:* \`$${((signal.allocatedCapital * signal.riskPct) / 100).toFixed(2)}\`
 `;
@@ -81,15 +92,32 @@ export const sendICT4HSignalToTelegram = async (
   }
 };
 
-// 2. إرسال إشعار إغلاق صفقة (ربح أو وقف خسارة)
+// 2. إرسال إشعار إغلاق الصفقة متبوعاً بلوحة الإحصائيات التراكمية
 export const sendTradeOutcomeToTelegram = async (data: TradeOutcomeAlert): Promise<boolean> => {
   if (!bot || !CHANNEL_ID) return false;
 
-  const isWin = data.outcome === 'WIN';
-  const header = isWin ? '🟢 *تم تحقيق الهدف بنجاح (TP1 HIT)* 🚀' : '🔴 *تم ضرب وقف الخسارة (STOP LOSS)* 🛑';
-  const pnlSign = isWin ? '+' : '';
+  let header = '';
+  switch (data.outcome) {
+    case 'STOP_LOSS':
+    case 'LOSS':
+      header = '🔴 *تم ضرب وقف الخسارة (STOP LOSS)* 🛑';
+      break;
+    case 'TP1':
+      header = '🎯 *تم تحقيق الهدف الأول (TP1 HIT)* 🚀';
+      break;
+    case 'TP1_THEN_BE':
+      header = '⚖️ *خروج على الدخول بعد الهدف الأول (TP1 ➔ BREAK-EVEN)* 🛡️';
+      break;
+    case 'TP3':
+      header = '👑 *تم تحقيق الهدف الثالث بالكامل (TP3 HIT - FULL TARGET)* 💎';
+      break;
+    default:
+      header = '🟢 *تم إغلاق الصفقة بنجاح* 🎯';
+  }
 
-  const message = `
+  const pnlSign = data.pnlDollars >= 0 ? '+' : '';
+
+  let message = `
 ${header}
 ═════════════════════════
 💎 *الزوج:* \`${data.symbol}\`
@@ -99,14 +127,25 @@ ${header}
 ═════════════════════════
 💰 *الربح / الخسارة المحققة:* \`${pnlSign}$${data.pnlDollars.toFixed(2)}\` (\`${pnlSign}${data.pnlPct.toFixed(2)}%\`)
 💼 *حجم المركز:* \`$${data.allocatedCapital.toFixed(2)}\`
-💵 *رصيد المحفظة الحالي:* \`$${data.currentBalance.toFixed(2)}\`
+💵 *رصيد المحفظة التراكمي الآن:* \`$${data.currentBalance.toFixed(2)}\`
 `;
+
+  if (data.stats) {
+    message += `═════════════════════════
+📊 *إحصائيات استراتيجية ICT 4H التراكمية:*
+🛑 *ضرب ستوب لوس:* \`${data.stats.stopLossCount}\`
+🎯 *هدف أول:* \`${data.stats.tp1Count}\`
+⚖️ *هدف أول ➔ بريك إيفن:* \`${data.stats.tp1ThenBECount}\`
+👑 *هدف ثالث بالكامل:* \`${data.stats.tp3Count}\`
+📈 *معدل الفوز العام:* \`${data.stats.winRatePct.toFixed(1)}%\` (إجمالي الصفقات: ${data.stats.totalClosed})
+`;
+  }
 
   try {
     await bot.sendMessage(CHANNEL_ID, message, { parse_mode: 'Markdown' });
     return true;
   } catch (err: any) {
-    console.error('❌ خطأ إرسال نتيجة الصفقة:', err.message);
+    console.error('❌ خطأ إرسال نتيجة وإحصائيات الصفقة:', err.message);
     return false;
   }
 };
