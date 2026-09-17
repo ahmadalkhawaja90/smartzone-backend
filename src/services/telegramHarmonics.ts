@@ -11,59 +11,57 @@ if (BOT_TOKEN) {
   bot = new TelegramBot(BOT_TOKEN);
 }
 
-export interface HarmonicSignal {
-  market: 'CRYPTO' | 'FOREX_METALS' | 'INDICES';
+export interface ICT4HSignal {
   symbol: string;
-  pattern: string;
-  type: 'BUY' | 'SELL';
-  timeframe: string;
   entryPrice: number;
   stopLoss: number;
   tp1: number;
-  tp2: number;
-  tp3: number;
-  bRetracement: number;
-  dRetracement: number;
+  riskPct: number;
   score: number;
+  allocatedCapital: number;
+  fvgTop?: number;
+  fvgBottom?: number;
 }
 
-export const sendHarmonicSignalToTelegram = async (
-  signal: HarmonicSignal,
+export interface TradeOutcomeAlert {
+  symbol: string;
+  outcome: 'WIN' | 'LOSS';
+  entryPrice: number;
+  exitPrice: number;
+  pnlDollars: number;
+  pnlPct: number;
+  allocatedCapital: number;
+  currentBalance: number;
+}
+
+// 1. إرسال إشعار فتح صفقة جديدة
+export const sendICT4HSignalToTelegram = async (
+  signal: ICT4HSignal,
   chartBuffer?: Buffer
 ): Promise<boolean> => {
   if (!bot || !CHANNEL_ID) {
-    console.warn('⚠️ إعدادات قناة الهارمونيك غير مكتملة في .env (TELEGRAM_HARMONICS_CHANNEL_ID مفقود)');
+    console.warn('⚠️ إعدادات التليجرام غير مكتملة في .env');
     return false;
   }
 
-  const orderType = signal.type === 'BUY' ? '🟢 أمر شراء معلق (BUY LIMIT)' : '🔴 أمر بيع معلق (SELL LIMIT)';
-  const marketBadge =
-    signal.market === 'CRYPTO'
-      ? '🪙 العملات الرقمية (Crypto)'
-      : signal.market === 'FOREX_METALS'
-      ? '🥇 الفوركس والمعادن (Forex & Metals)'
-      : '🏛️ المؤشرات العالمية (Global Indices)';
+  const rr = ((signal.tp1 - signal.entryPrice) / (signal.entryPrice - signal.stopLoss)).toFixed(2);
 
   const message = `
-📐 *SMARTZONE HARMONIC AI — تنبيه استباقي* ⚡
+⚡ *SMARTZONE AI — صفقة ICT جديدة (4H)* 🎯
 ═════════════════════════
-🌐 *السوق:* ${marketBadge}
-💎 *الأصل / الزوج:* \`${signal.symbol}\`
-📐 *النموذج المتوقع:* *${signal.pattern}*
-⏱️ *الإطار الزمني:* \`${signal.timeframe}\`
-🚦 *نوع التمركز:* ${orderType}
-🏆 *نسبة التوافق الهندسي:* \`${signal.score}%\` 🔥
+💎 *الزوج:* \`${signal.symbol}\`
+⏱️ *الفريم الزمني:* \`4H (Swing Execution)\`
+🚦 *نوع الأمر:* 🟢 *شراء مباشر / معلق (BUY)*
+🏆 *سكور الجودة (Score):* \`${signal.score}/100\` 🔥
 ═════════════════════════
-🎯 *منطقة الانعكاس المتوقعة (Point D):* \`${signal.entryPrice}\`
-🛑 *وقف الخسارة المحكم (Invalidation):* \`${signal.stopLoss}\` ❌
-
-🏁 *المستويات المستهدفة (Fibonacci Targets):*
-  🔹 *الهدف الأول (TP1 - 0.382):* \`${signal.tp1}\` 🎯
-  🔹 *الهدف الثاني (TP2 - 0.618):* \`${signal.tp2}\` 🚀
-  🔹 *الهدف الممتد (TP3 - 1.000):* \`${signal.tp3}\` 👑
+🎯 *سعر الدخول (FVG Entry):* \`${signal.entryPrice}\`
+🛑 *وقف الخسارة (Sweep Low):* \`${signal.stopLoss}\` (\`-${signal.riskPct}%\`) ❌
+🏁 *الهدف الأول (Target 1):* \`${signal.tp1}\` 🎯
+📊 *نسبة العائد إلى المخاطرة (R:R):* \`1:${rr}\`
 ═════════════════════════
-💡 *القراءة الهندسية:*
-✨ اكتمل تشكل الأضلاع (XA, AB, BC) بنسب فيبوناتشي دقيقة. السعر يتجه حالياً نحو منطقة الانعكاس المحتملة (PRZ - النقطة D) لارتداد متوقع.
+💼 *إدارة رأس المال والمحفظة:*
+💵 *الحصة المخصصة (30%):* \`$${signal.allocatedCapital.toFixed(2)}\`
+🛡️ *أقصى مخاطرة مسموحة:* \`$${((signal.allocatedCapital * signal.riskPct) / 100).toFixed(2)}\`
 `;
 
   try {
@@ -75,11 +73,40 @@ export const sendHarmonicSignalToTelegram = async (
     } else {
       await bot.sendMessage(CHANNEL_ID, message, { parse_mode: 'Markdown' });
     }
-
-    console.log(`✅ [Harmonic + Chart Sent]: ${signal.symbol} - ${signal.pattern} (${signal.type})`);
+    console.log(`✅ [Telegram ICT 4H Sent]: ${signal.symbol}`);
     return true;
   } catch (error: any) {
-    console.error('❌ خطأ إرسال إشعار الهارمونيك:', error.message);
+    console.error('❌ خطأ إرسال إشعار التليجرام:', error.message);
+    return false;
+  }
+};
+
+// 2. إرسال إشعار إغلاق صفقة (ربح أو وقف خسارة)
+export const sendTradeOutcomeToTelegram = async (data: TradeOutcomeAlert): Promise<boolean> => {
+  if (!bot || !CHANNEL_ID) return false;
+
+  const isWin = data.outcome === 'WIN';
+  const header = isWin ? '🟢 *تم تحقيق الهدف بنجاح (TP1 HIT)* 🚀' : '🔴 *تم ضرب وقف الخسارة (STOP LOSS)* 🛑';
+  const pnlSign = isWin ? '+' : '';
+
+  const message = `
+${header}
+═════════════════════════
+💎 *الزوج:* \`${data.symbol}\`
+⏱️ *الفريم:* \`4H\`
+🎯 *سعر الدخول:* \`${data.entryPrice}\`
+🏁 *سعر الخروج:* \`${data.exitPrice}\`
+═════════════════════════
+💰 *الربح / الخسارة المحققة:* \`${pnlSign}$${data.pnlDollars.toFixed(2)}\` (\`${pnlSign}${data.pnlPct.toFixed(2)}%\`)
+💼 *حجم المركز:* \`$${data.allocatedCapital.toFixed(2)}\`
+💵 *رصيد المحفظة الحالي:* \`$${data.currentBalance.toFixed(2)}\`
+`;
+
+  try {
+    await bot.sendMessage(CHANNEL_ID, message, { parse_mode: 'Markdown' });
+    return true;
+  } catch (err: any) {
+    console.error('❌ خطأ إرسال نتيجة الصفقة:', err.message);
     return false;
   }
 };
