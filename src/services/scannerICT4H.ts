@@ -244,7 +244,6 @@ async function monitorActiveTrades() {
         await trade.save();
         const newBalance = await getAccountBalance();
 
-        // إرسال تقرير الخروج إلى تيليجرام
         await sendTradeOutcomeToTelegram({
           symbol: trade.symbol,
           outcome,
@@ -306,21 +305,26 @@ export async function runICT4HScannerJob() {
         entryTime: new Date(),
       });
 
-      // توليد صورة الشارت إن أمكن
+      // توليد صورة الشارت مع تمرير tp2 و tp3 لحل خطأ ChartOverlayOptions
       let chartBuffer: Buffer | undefined = undefined;
       try {
+        const risk = trade.entryPrice - trade.stopLoss;
+        const calcTp2 = parseFloat((trade.entryPrice + risk * 1.5).toFixed(6));
+        const calcTp3 = parseFloat((trade.entryPrice + risk * 2.0).toFixed(6));
+
         chartBuffer = generateChartPngBuffer(trade.candles as unknown as CandlePlotData[], {
           symbol: trade.symbol,
           timeframe: '4h',
           entry: trade.entryPrice,
           stopLoss: trade.stopLoss,
           tp1: trade.tp1,
+          tp2: calcTp2,
+          tp3: calcTp3,
           fvgTop: trade.fvgTop,
           fvgBottom: trade.fvgBottom,
         });
       } catch {}
 
-      // إرسال الإشعار للقناة المحددة
       await sendICT4HSignalToTelegram(
         {
           symbol: trade.symbol,
