@@ -1,18 +1,56 @@
 import axios from 'axios';
 import crypto from 'crypto';
 
-const BASE_URL = 'https://testnet.binance.vision';
+const BASE_URL = process.env.BINANCE_TESTNET_URL || 'https://testnet.binance.vision';
 const API_KEY = process.env.BINANCE_TESTNET_API_KEY || '';
 const SECRET_KEY = process.env.BINANCE_TESTNET_SECRET_KEY || '';
 
-// تخصيص رأس المال الافتراضي بـ 100 دولار
-export const VIRTUAL_INITIAL_CAPITAL = 100;
-export const RISK_PERCENT_PER_TRADE = 0.10; // 10% لكل صفقة = $10
+// كاش لمعلومات رموز التداول لتجنب تكرار استدعاء exchangeInfo
+const symbolInfoCache: Map<string, { minQty: number; stepSize: number; tickSize: number }> = new Map();
 
 // دالة مساعدة لتوقيع الـ Query Params بتشفير HMAC SHA256 المطلوب من باينانس
 const generateSignature = (queryString: string): string => {
   return crypto.createHmac('sha256', SECRET_KEY).update(queryString).digest('hex');
 };
+
+// جلب قيود اللوت والسعر لكل زوج لضمان قبول الأوامر على Testnet
+async function getSymbolFilters(symbol: string) {
+  if (symbolInfoCache.has(symbol)) {
+    return symbolInfoCache.get(symbol)!;
+  }
+
+  try {
+    const res = await axios.get(`${BASE_URL}/api/v3/exchangeInfo?symbol=${symbol}`);
+    const symbolData = res.data.symbols?.[0];
+    let stepSize = 0.0001;
+    let minQty = 0.0001;
+    let tickSize = 0.0001;
+
+    if (symbolData && symbolData.filters) {
+      const lotFilter = symbolData.filters.find((f: any) => f.filterType === 'LOT_SIZE');
+      if (lotFilter) {
+        stepSize = parseFloat(lotFilter.stepSize);
+        minQty = parseFloat(lotFilter.minQty);
+      }
+      const priceFilter = symbolData.filters.find((f: any) => f.filterType === 'PRICE_FILTER');
+      if (priceFilter) {
+        tickSize = parseFloat(priceFilter.tickSize);
+      }
+    }
+
+    const info = { minQty, stepSize, tickSize };
+    symbolInfoCache.set(symbol, info);
+    return info;
+  } catch {
+    return { minQty: 0.0001, stepSize: 0.0001, tickSize: 0.0001 };
+  }
+}
+
+// دالة لضبط وتقريب الأرقام حسب قيود باينانس
+function roundToStep(value: number, step: number): number {
+  const precision = Math.max(0, -Math.floor(Math.log10(step)));
+  return parseFloat((Math.floor(value / step) * step).toFixed(precision));
+}
 
 // 1. فحص الاتصال وقراءة معلومات الحساب من Testnet
 export const checkBinanceConnection = async (): Promise<boolean> => {
@@ -23,11 +61,11 @@ export const checkBinanceConnection = async (): Promise<boolean> => {
 
     const response = await axios.get(`${BASE_URL}/api/v3/account?${queryString}&signature=${signature}`, {
       headers: { 'X-MBX-APIKEY': API_KEY },
+      timeout: 8000,
     });
 
     if (response.data && response.data.balances) {
       console.log('✅ تم الاتصال بنجاح بـ Binance Testnet API.');
-      console.log(`💼 تم اعتماد رأس المال الافتراضي للتداول: $${VIRTUAL_INITIAL_CAPITAL} USDT`);
       return true;
     }
     return false;
@@ -37,17 +75,24 @@ export const checkBinanceConnection = async (): Promise<boolean> => {
   }
 };
 
-// 2. إرسال أمر شراء معلق (Limit Buy Order) عند الحد العلوي للفجوة
+// 2. إرسال أمر شراء معلق (Limit Buy Order) بأي رأس مال مخصص
 export const placeLimitBuyOrder = async (
   symbol: string,
   price: number,
-  allocatedUsdt: number = VIRTUAL_INITIAL_CAPITAL * RISK_PERCENT_PER_TRADE
+  allocatedUsdt: number
 ): Promise<{ success: boolean; orderId?: string; quantity?: number; error?: string }> => {
   try {
+    const filters = await getSymbolFilters(symbol);
     const rawQuantity = allocatedUsdt / price;
-    // تقريب الكمية لتناسب صيغة اللوت في باينانس
-    const quantity = parseFloat(rawQuantity.toFixed(4));
-    const formattedPrice = parseFloat(price.toFixed(4));
+    const quantity = roundToStep(rawQuantity, filters.stepSize);
+    const formattedPrice = roundToStep(price, filters.tickSize);
+
+    if (quantity < filters.minQty) {
+      return {
+        success: false,
+        error: `الكمية المحسوبة (${quantity}) أقل من الحد الأدنى للوت (${filters.minQty})`,
+      };
+    }
 
     const timestamp = Date.now();
     const queryString = `symbol=${symbol}&side=BUY&type=LIMIT&timeInForce=GTC&quantity=${quantity}&price=${formattedPrice}&timestamp=${timestamp}`;
@@ -62,7 +107,7 @@ export const placeLimitBuyOrder = async (
     return {
       success: true,
       orderId: response.data.orderId.toString(),
-      quantity: quantity,
+      quantity,
     };
   } catch (error: any) {
     console.error(`❌ فشل إرسال أمر الشراء لـ ${symbol}:`, error.response?.data || error.message);
@@ -73,7 +118,7 @@ export const placeLimitBuyOrder = async (
   }
 };
 
-// 3. فحص حالة الطلب في المنصة (هل تم تنفيذه FILLED أم ما زال NEW)
+// 3. فحص حالة الطلب في المنصة (FILLED / NEW / CANCELED)
 export const checkOrderStatus = async (
   symbol: string,
   orderId: string
@@ -89,7 +134,7 @@ export const checkOrderStatus = async (
     );
 
     return {
-      status: response.data.status, // 'NEW' | 'FILLED' | 'CANCELED' | 'EXPIRED'
+      status: response.data.status,
       executedQty: parseFloat(response.data.executedQty),
     };
   } catch (error: any) {
@@ -98,13 +143,22 @@ export const checkOrderStatus = async (
   }
 };
 
-// 4. إغلاق جزء من الصفقة بسعر السوق (لجني أرباح 25% عند TP1 مثلاً)
+// 4. إغلاق الصفقة بسعر السوق (Market Sell)
 export const placeMarketSellOrder = async (
   symbol: string,
   quantity: number
 ): Promise<{ success: boolean; orderId?: string; error?: string }> => {
   try {
-    const formattedQty = parseFloat(quantity.toFixed(4));
+    const filters = await getSymbolFilters(symbol);
+    const formattedQty = roundToStep(quantity, filters.stepSize);
+
+    if (formattedQty < filters.minQty) {
+      return {
+        success: false,
+        error: `الكمية المراد بيعها (${formattedQty}) أقل من الحد الأدنى`,
+      };
+    }
+
     const timestamp = Date.now();
     const queryString = `symbol=${symbol}&side=SELL&type=MARKET&quantity=${formattedQty}&timestamp=${timestamp}`;
     const signature = generateSignature(queryString);
