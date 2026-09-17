@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Opportunity } from '../models/Opportunity';
+import { CryptoTrade1H, ICryptoTrade1H } from './cryptoScanner';
 import { checkOrderStatus, placeMarketSellOrder, cancelBinanceOrder } from './binanceClient';
 import { sendTradeUpdateToTelegram } from './telegramBot';
 
@@ -15,146 +15,173 @@ const getLatestPrice = async (symbol: string): Promise<number | null> => {
   }
 };
 
-// 1. مراقبة وإدارة الأوامر المعلقة
+// 1. مراقبة وإدارة الأوامر المعلقة في trades_ict_1h
 const trackPendingOrders = async () => {
-  const pendingOpps = await Opportunity.find({ status: 'PENDING_ENTRY' });
+  const pendingTrades = await CryptoTrade1H.find({ status: 'PENDING_ENTRY' });
 
-  for (const opp of pendingOpps) {
+  for (const trade of pendingTrades) {
     try {
-      const currentPrice = await getLatestPrice(opp.symbol);
+      const currentPrice = await getLatestPrice(trade.symbol);
       if (!currentPrice) continue;
 
-      // أ) التحقق مما إذا كان السعر قد تجاوز TP1 دون تفعيل الشراء (Setup Invalidation)
-      const hoursSinceCreation = (Date.now() - new Date(opp.createdAt).getTime()) / (1000 * 60 * 60);
-      if (currentPrice >= opp.targets.tp1 || hoursSinceCreation >= 24) {
-        if (opp.orderId) {
-          await cancelBinanceOrder(opp.symbol, opp.orderId);
+      // أ) التحقق من إلغاء الصفقة إذا وصل السعر لـ TP1 قبل التفعيل أو مر أكثر من 24 ساعة
+      const hoursSinceCreation = (Date.now() - new Date(trade.createdAt).getTime()) / (1000 * 60 * 60);
+      if (currentPrice >= trade.targets.tp1 || hoursSinceCreation >= 24) {
+        if (trade.orderId) {
+          await cancelBinanceOrder(trade.symbol, trade.orderId);
         }
-        opp.status = 'EXPIRED';
-        opp.closedAt = new Date();
-        await opp.save();
-        console.log(`⏱️ [Order Expired] تم إلغاء الأمر المعلق لـ ${opp.symbol}`);
+        trade.status = 'CANCELLED';
+        await trade.save();
+        console.log(`⏱️ [ICT 1H Expired] تم إلغاء الأمر المعلق لـ ${trade.symbol}`);
         continue;
       }
 
-      // ب) فحص حالة التنفيذ عبر الـ API
+      // ب) فحص تفعيل الصفقة عبر باينانس Testnet أو وصول السعر لمنطقة الدخول
       let isFilled = false;
-      if (opp.orderId) {
-        const orderInfo = await checkOrderStatus(opp.symbol, opp.orderId);
+      if (trade.orderId) {
+        const orderInfo = await checkOrderStatus(trade.symbol, trade.orderId);
         if (orderInfo && orderInfo.status === 'FILLED') {
           isFilled = true;
+          if (orderInfo.executedQty > 0) {
+            trade.quantity = orderInfo.executedQty;
+          }
         }
-      } else {
-        if (currentPrice <= opp.entryZone.max) {
-          isFilled = true;
-        }
+      } else if (currentPrice <= trade.entryZone.max) {
+        isFilled = true;
       }
 
       if (isFilled) {
-        opp.status = 'ACTIVE';
-        opp.currentStopLoss = opp.stopLoss;
-        await opp.save();
-        console.log(`🚀 [Order Filled] تم تفعيل صفقة الشراء لـ ${opp.symbol}`);
-        await sendTradeUpdateToTelegram('FILLED', opp);
+        trade.status = 'ACTIVE';
+        await trade.save();
+        console.log(`🚀 [ICT 1H Filled] تم تفعيل الشراء لـ ${trade.symbol}`);
+        await sendTradeUpdateToTelegram('FILLED', trade as any);
       }
     } catch (error: any) {
-      console.error(`⚠️ خطأ تتبع الأمر المعلق لـ ${opp.symbol}:`, error.message);
+      console.error(`⚠️ خطأ تتبع الأمر المعلق لـ ${trade.symbol}:`, error.message);
     }
   }
 };
 
 // 2. مراقبة وإدارة الصفقات النشطة (SL, TP1, Break-Even, Trailing SL, TP3)
 const trackActiveTrades = async () => {
-  const activeOpps = await Opportunity.find({ 
+  const activeTrades = await CryptoTrade1H.find({ 
     status: { $in: ['ACTIVE', 'BREAK_EVEN', 'TP2_SECURED'] } 
   });
 
-  for (const opp of activeOpps) {
+  for (const trade of activeTrades) {
     try {
-      const currentPrice = await getLatestPrice(opp.symbol);
+      const currentPrice = await getLatestPrice(trade.symbol);
       if (!currentPrice) continue;
 
-      const entryPrice = opp.entryZone.max;
-      const allocatedCapital = 50;
-      const totalQty = allocatedCapital / entryPrice;
+      const entryPrice = trade.entryZone.max;
+      const totalQty = trade.quantity && trade.quantity > 0 
+        ? trade.quantity 
+        : trade.allocatedCapital / entryPrice;
 
-      if (opp.status === 'ACTIVE') {
-        if (currentPrice <= opp.stopLoss) {
-          const lossPct = parseFloat((((opp.stopLoss - entryPrice) / entryPrice) * 100).toFixed(2));
-          opp.status = 'HIT_SL';
-          opp.profitPercentage = lossPct;
-          opp.closedAt = new Date();
-          await opp.save();
-          console.log(`🛑 [Stop Loss Hit] ضرب وقف الخسارة لـ ${opp.symbol}`);
-          await sendTradeUpdateToTelegram('SL', opp, lossPct);
+      // ─── المرحلة الأولى: الصفقة نشطة في مسارها الطبيعي ───
+      if (trade.status === 'ACTIVE') {
+        if (currentPrice <= trade.stopLoss) {
+          if (totalQty > 0) {
+            await placeMarketSellOrder(trade.symbol, totalQty);
+          }
+          const lossPct = parseFloat((((trade.stopLoss - entryPrice) / entryPrice) * 100).toFixed(2));
+          trade.status = 'CLOSED_LOSS';
+          trade.pnlPct = lossPct;
+          trade.pnlDollars = trade.allocatedCapital * (lossPct / 100);
+          await trade.save();
+
+          console.log(`🛑 [ICT 1H SL] ضرب وقف الخسارة لـ ${trade.symbol}`);
+          await sendTradeUpdateToTelegram('SL', trade as any, lossPct);
           continue;
         }
 
-        if (currentPrice >= opp.targets.tp1) {
+        if (currentPrice >= trade.targets.tp1) {
           const sellQty = totalQty * 0.50;
-          await placeMarketSellOrder(opp.symbol, sellQty);
+          if (sellQty > 0) {
+            await placeMarketSellOrder(trade.symbol, sellQty);
+          }
 
-          const tp1ProfitPct = parseFloat((((opp.targets.tp1 - entryPrice) / entryPrice) * 100).toFixed(2));
-          opp.status = 'BREAK_EVEN';
-          opp.currentStopLoss = entryPrice;
-          opp.profitPercentage = tp1ProfitPct;
-          await opp.save();
-          console.log(`🎯 [TP1 Hit & 50% Sold] تم بيع 50% وتأمين الدخول لـ ${opp.symbol}`);
-          await sendTradeUpdateToTelegram('TP1', opp, tp1ProfitPct);
+          const tp1ProfitPct = parseFloat((((trade.targets.tp1 - entryPrice) / entryPrice) * 100).toFixed(2));
+          trade.status = 'BREAK_EVEN';
+          trade.pnlPct = tp1ProfitPct;
+          await trade.save();
+
+          console.log(`🎯 [ICT 1H TP1] جني ربح 50% وتأمين الدخول لـ ${trade.symbol}`);
+          await sendTradeUpdateToTelegram('TP1', trade as any, tp1ProfitPct);
           continue;
         }
       }
 
-      if (opp.status === 'BREAK_EVEN') {
+      // ─── المرحلة الثانية: تأمين الدخول (Break-Even) ───
+      if (trade.status === 'BREAK_EVEN') {
         if (currentPrice <= entryPrice) {
-          opp.status = 'CLOSED_BE';
-          opp.closedAt = new Date();
-          await opp.save();
-          console.log(`🛡️ [Closed at BE] خروج المتبقي على الدخول لـ ${opp.symbol}`);
-          await sendTradeUpdateToTelegram('BE', opp, 0);
+          const remainingQty = totalQty * 0.50;
+          if (remainingQty > 0) {
+            await placeMarketSellOrder(trade.symbol, remainingQty);
+          }
+
+          // الربح الإجمالي هو نصف الصفقة الأول عند TP1
+          const halfProfitDollars = (trade.allocatedCapital * 0.50) * (((trade.targets.tp1 - entryPrice) / entryPrice));
+          trade.status = 'CLOSED_WIN';
+          trade.pnlDollars = halfProfitDollars;
+          await trade.save();
+
+          console.log(`🛡️ [ICT 1H Closed at BE] خروج المتبقي على الدخول لـ ${trade.symbol}`);
+          await sendTradeUpdateToTelegram('BE', trade as any, 0);
           continue;
         }
 
-        if (currentPrice >= opp.targets.tp2) {
-          opp.status = 'TP2_SECURED';
-          opp.currentStopLoss = opp.targets.tp1;
-          await opp.save();
-          console.log(`🔥 [TP2 Hit & Trailing Moved] تم رفع الوقف إلى TP1 لـ ${opp.symbol}`);
-          await sendTradeUpdateToTelegram('TP2', opp);
+        if (currentPrice >= trade.targets.tp2) {
+          trade.status = 'TP2_SECURED';
+          await trade.save();
+
+          console.log(`🔥 [ICT 1H TP2] رفع الوقف إلى TP1 لـ ${trade.symbol}`);
+          await sendTradeUpdateToTelegram('TP2', trade as any);
           continue;
         }
       }
 
-      if (opp.status === 'TP2_SECURED') {
-        if (currentPrice <= opp.targets.tp1) {
+      // ─── المرحلة الثالثة: تأمين الوقف عند TP1 والهدف الثالث ───
+      if (trade.status === 'TP2_SECURED') {
+        if (currentPrice <= trade.targets.tp1) {
           const remainingQty = totalQty * 0.50;
-          await placeMarketSellOrder(opp.symbol, remainingQty);
+          if (remainingQty > 0) {
+            await placeMarketSellOrder(trade.symbol, remainingQty);
+          }
 
-          const securedProfitPct = parseFloat((((opp.targets.tp1 - entryPrice) / entryPrice) * 100).toFixed(2));
-          opp.status = 'CLOSED_TRAILING_TP1';
-          opp.profitPercentage = securedProfitPct;
-          opp.closedAt = new Date();
-          await opp.save();
-          console.log(`🔒 [Trailing SL Hit at TP1] تم إغلاق المتبقي على ربح TP1 لـ ${opp.symbol}`);
-          await sendTradeUpdateToTelegram('TRAILING_TP1', opp, securedProfitPct);
+          const gainPct = ((trade.targets.tp1 - entryPrice) / entryPrice);
+          trade.status = 'CLOSED_WIN';
+          trade.pnlDollars = trade.allocatedCapital * gainPct;
+          trade.pnlPct = parseFloat((gainPct * 100).toFixed(2));
+          await trade.save();
+
+          console.log(`🔒 [ICT 1H Trailing SL] إغلاق المتبقي على ربح TP1 لـ ${trade.symbol}`);
+          await sendTradeUpdateToTelegram('TRAILING_TP1', trade as any, trade.pnlPct);
           continue;
         }
 
-        if (currentPrice >= opp.targets.tp3) {
+        if (currentPrice >= trade.targets.tp3) {
           const remainingQty = totalQty * 0.50;
-          await placeMarketSellOrder(opp.symbol, remainingQty);
+          if (remainingQty > 0) {
+            await placeMarketSellOrder(trade.symbol, remainingQty);
+          }
 
-          const tp3ProfitPct = parseFloat((((opp.targets.tp3 - entryPrice) / entryPrice) * 100).toFixed(2));
-          opp.status = 'HIT_TP3';
-          opp.profitPercentage = tp3ProfitPct;
-          opp.closedAt = new Date();
-          await opp.save();
-          console.log(`👑 [TP3 Hit] إغلاق كامل الصفقة بنجاح تام لـ ${opp.symbol}`);
-          await sendTradeUpdateToTelegram('TP3', opp, tp3ProfitPct);
+          const tp1Gain = (trade.targets.tp1 - entryPrice) / entryPrice;
+          const tp3Gain = (trade.targets.tp3 - entryPrice) / entryPrice;
+          const totalProfitDollars = (trade.allocatedCapital * 0.5 * tp1Gain) + (trade.allocatedCapital * 0.5 * tp3Gain);
+          const totalProfitPct = parseFloat(((totalProfitDollars / trade.allocatedCapital) * 100).toFixed(2));
+
+          trade.status = 'CLOSED_WIN';
+          trade.pnlDollars = totalProfitDollars;
+          trade.pnlPct = totalProfitPct;
+          await trade.save();
+
+          console.log(`👑 [ICT 1H TP3 Full Hit] إغلاق كامل الصفقة بربح تام لـ ${trade.symbol}`);
+          await sendTradeUpdateToTelegram('TP3', trade as any, totalProfitPct);
         }
       }
     } catch (error: any) {
-      console.error(`⚠️ خطأ تتبع الصفقة النشطة لـ ${opp.symbol}:`, error.message);
+      console.error(`⚠️ خطأ تتبع صفقة ICT 1H لـ ${trade.symbol}:`, error.message);
     }
   }
 };
