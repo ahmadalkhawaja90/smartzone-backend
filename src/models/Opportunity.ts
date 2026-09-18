@@ -28,11 +28,11 @@ export interface IOpportunity extends Document {
     stopLossReason: string;
     takeProfitReason: string;
   };
-  // الحالات المحدثة لتشمل دورة حياة الأمر والتأمين
   status:
     | 'PENDING_ENTRY'
     | 'ACTIVE'
     | 'BREAK_EVEN'
+    | 'TP1_SECURED'
     | 'HIT_TP1'
     | 'HIT_TP2'
     | 'HIT_TP3'
@@ -43,7 +43,6 @@ export interface IOpportunity extends Document {
     | 'TP2_SECURED'
     | 'CLOSED_TRAILING_TP1';
 
-  // حقول التتبع الخاصة بمنصة باينانس
   orderId?: string;
   entryOrderType?: 'LIMIT' | 'MARKET';
   currentStopLoss?: number;
@@ -58,7 +57,7 @@ const OpportunitySchema = new Schema<IOpportunity>(
     symbol: { type: String, required: true, uppercase: true, index: true },
     baseAsset: { type: String, required: true, uppercase: true },
     market: { type: String, enum: ['crypto', 'forex'], default: 'crypto' },
-    timeframe: { type: String, default: '15m' },
+    timeframe: { type: String, default: '1h' },
     type: { type: String, default: 'SPOT_BUY' },
     currentPrice: { type: Number, required: true },
     entryZone: {
@@ -71,7 +70,7 @@ const OpportunitySchema = new Schema<IOpportunity>(
       tp2: { type: Number, required: true },
       tp3: { type: Number, required: true },
     },
-    riskRewardRatio: { type: String, default: '1:2.5' },
+    riskRewardRatio: { type: String, default: '1:3.0' },
     confluenceScore: { type: Number, required: true },
     fulfilledConditions: [
       {
@@ -90,6 +89,7 @@ const OpportunitySchema = new Schema<IOpportunity>(
         'PENDING_ENTRY',
         'ACTIVE',
         'BREAK_EVEN',
+        'TP1_SECURED',
         'HIT_TP1',
         'HIT_TP2',
         'HIT_TP3',
