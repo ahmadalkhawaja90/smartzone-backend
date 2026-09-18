@@ -1,4 +1,4 @@
-Import axios from 'axios';
+import axios from 'axios';
 import { Opportunity } from '../models/Opportunity';
 import { checkOrderStatus, placeMarketSellOrder, cancelBinanceOrder } from './binanceClient';
 import { sendTradeUpdateToTelegram } from './telegramBot';
