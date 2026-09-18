@@ -164,7 +164,7 @@ const detectFVGs = (candles: CandleData[], startIdx: number, endIdx: number): FV
 };
 
 // ==========================================
-// 4. خوارزمية تحليل ICT الذكية (بحث مرن للشراء فقط)
+// 4. خوارزمية تحليل ICT الذكية (منتصف الفجوة CE)
 // ==========================================
 export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe: string) => {
   if (candles.length < 50) return null;
@@ -225,8 +225,11 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
           });
 
           if (validFVG) {
-            if (currentPrice <= equilibrium && currentPrice > validFVG.bottom * 0.998) {
-              const entryPrice = validFVG.top;
+            // الدخول عند منتصف الفجوة (50% Consequent Encroachment)
+            const entryPrice = parseFloat(((validFVG.top + validFVG.bottom) / 2).toFixed(6));
+
+            // التأكد من أن السعر داخل منطقة الخصم ولم يكسر قاع الفجوة
+            if (currentPrice <= equilibrium && currentPrice >= validFVG.bottom) {
               const stopLoss = parseFloat((impulseLow * 0.997).toFixed(6));
               const risk = entryPrice - stopLoss;
               
@@ -248,18 +251,18 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
                   opportunity: {
                     symbol, baseAsset, market: 'crypto' as const, timeframe,
                     type: 'SPOT_BUY' as const, currentPrice,
-                    entryZone: { min: parseFloat(validFVG.bottom.toFixed(6)), max: parseFloat(validFVG.top.toFixed(6)) },
+                    entryZone: { min: parseFloat(validFVG.bottom.toFixed(6)), max: entryPrice },
                     stopLoss, targets: { tp1, tp2, tp3 },
                     riskRewardRatio: '1:3.0', confluenceScore: 98,
                     fulfilledConditions: [
                       { title: 'Liquidity Sweep', description: `سحب سيولة القاع $${prevLow.price}` },
                       { title: 'True MSS', description: `كسر حقيقي للهيكل فوق $${mssHigh.price}` },
-                      { title: 'Fresh Discount FVG', description: `عودة السعر لاختبار فجوة غير مستهلكة` },
+                      { title: 'Mid-FVG (CE 50%)', description: `دخول مؤسسي دقيق من منتصف الفجوة السعرية` },
                     ],
                     analysisReasons: {
-                      entryReason: `شراء من FVG مثالية في منطقة الخصم.`,
+                      entryReason: `شراء معلق Limit عند منتصف الفجوة السعرية $${entryPrice}.`,
                       stopLossReason: `وقف أسفل قاع السحب $${stopLoss}.`,
-                      takeProfitReason: `TP1 (سيولة BSL): $${tp1} | TP2 (فيبو 1.272): $${tp2} | TP3 (فيبو 1.618): $${tp3}`
+                      takeProfitReason: `TP1 (إغلاق 50% وتأمين الدخول): $${tp1} | TP2: $${tp2} | TP3: $${tp3}`
                     },
                     status: 'PENDING_ENTRY' as const,
                   },
@@ -276,54 +279,43 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
 };
 
 // ==========================================
-// 5. تشغيل المسح الدوري الشامل مع إرسال الأوامر المعلقة
+// 5. تشغيل المسح الدوري الشامل
 // ==========================================
 export const runFullCryptoScan = async () => {
-  const targetTimeframes = ['1h', '4h'];
-  console.log('🚀 [Crypto Scanner] بدء دورة الفحص لأفضل 60 عملة رقمية (1h, 4h)...');
+  const targetTimeframes = ['1h'];
+  console.log('🚀 [Crypto Scanner] بدء دورة فحص ICT OTE (1H)...');
 
   let symbols: string[] = [];
   try {
     symbols = await getActiveUSDTSpotPairs();
-    console.log(`🔍 تم تثبيت ${symbols.length} زوج من نخبة العملات للفحص.`);
+    console.log(`🔍 تم تثبيت ${symbols.length} زوج للفحص على فريم 1H.`);
   } catch (error) {
     return;
   }
 
   let discoveredCount = 0;
-  // قفل محلي للدورة لمنع إرسال نفس العملة على فريمين مختلفين
-  const scannedInThisRun = new Set<string>();
 
   for (const symbol of symbols) {
     for (const tf of targetTimeframes) {
       try {
-        if (scannedInThisRun.has(symbol)) {
-          continue; // تم رصد العملة بالفعل في نفس الدورة
-        }
-
         const candles = await fetchCandles(symbol, tf, 100);
         if (candles.length < 40) continue;
 
         const result = analyzeICTSetup(candles, symbol, tf);
 
         if (result) {
-          // 🛑 قفل مانع التكرار الصارم:
-          // 1. استبعاد أي صفقة ما زالت مفتوحة أو معلقة
-          // 2. استبعاد أي توصية لنفس العملة تم إرسالها خلال آخر 12 ساعة حتى لو أغلقت أو أُلغيت
           const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
           const existing = await Opportunity.findOne({
             symbol,
             $or: [
-              { status: { $in: ['PENDING_ENTRY', 'ACTIVE', 'BREAK_EVEN', 'TP2_SECURED'] } },
+              { status: { $in: ['PENDING_ENTRY', 'ACTIVE', 'BREAK_EVEN', 'TP1_SECURED', 'TP2_SECURED'] } },
               { createdAt: { $gte: twelveHoursAgo } }
             ]
           });
 
-          if (existing || scannedInThisRun.has(symbol)) {
-            continue; // تخطي العملة فوراً وعدم إرسالها
+          if (existing) {
+            continue;
           }
-
-          scannedInThisRun.add(symbol);
 
           const entryPrice = result.opportunity.entryZone.max;
           const orderResult = await placeLimitBuyOrder(symbol, entryPrice);
@@ -331,9 +323,9 @@ export const runFullCryptoScan = async () => {
           let orderId: string | undefined = undefined;
           if (orderResult.success && orderResult.orderId) {
             orderId = orderResult.orderId;
-            console.log(`⚡ [Binance Testnet] تم وضع أمر شراء معلق لـ ${symbol} بسعر $${entryPrice} (Order ID: ${orderId})`);
+            console.log(`⚡ [Binance] تم وضع أمر شراء معلق لـ ${symbol} بسعر $${entryPrice} (Order ID: ${orderId})`);
           } else {
-            console.warn(`⚠️ [Binance Testnet] لم يتم إرسال الطلب لـ ${symbol}: ${orderResult.error}`);
+            console.warn(`⚠️ [Binance] فشل وضع الطلب لـ ${symbol}: ${orderResult.error}`);
           }
 
           const createdOpp = await Opportunity.create({
@@ -342,10 +334,9 @@ export const runFullCryptoScan = async () => {
           });
 
           discoveredCount++;
-          console.log(`🎯 [فرصة ICT رُصدت]: ${symbol} [${tf}] - تم الحفظ والإرسال.`);
+          console.log(`🎯 [فرصة ICT OTE]: ${symbol} - تم الحفظ والإرسال.`);
 
           const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
-
           await sendOpportunityToTelegram(createdOpp, chartBuffer);
         }
       } catch (error) {
@@ -355,5 +346,5 @@ export const runFullCryptoScan = async () => {
     }
   }
 
-  console.log(`✨ [Crypto Scanner] اكتمل الفحص: إجمالي المحاولات ${symbols.length * 2} | رُصدت ${discoveredCount} فرصة.`);
+  console.log(`✨ [Crypto Scanner] اكتمل الفحص: رُصدت ${discoveredCount} فرصة.`);
 };
