@@ -5,8 +5,9 @@ const BASE_URL = 'https://testnet.binance.vision';
 const API_KEY = process.env.BINANCE_TESTNET_API_KEY || '';
 const SECRET_KEY = process.env.BINANCE_TESTNET_SECRET_KEY || '';
 
-export const VIRTUAL_INITIAL_CAPITAL = 100;
-export const RISK_PERCENT_PER_TRADE = 0.10; // 10% لكل صفقة = $10
+// تخصيص رأس المال الافتراضي بـ 500 دولار ونسبة دخول 30% ($150)
+export const VIRTUAL_INITIAL_CAPITAL = 500;
+export const RISK_PERCENT_PER_TRADE = 0.30; 
 
 // ذاكرة تخزين مؤقت لقواعد التداول للرموز لتجنب استدعاء API متكرر
 interface SymbolFilterRules {
