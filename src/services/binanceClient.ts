@@ -1,4 +1,4 @@
-Import axios from 'axios';
+import axios from 'axios';
 import crypto from 'crypto';
 
 const BASE_URL = 'https://testnet.binance.vision';
