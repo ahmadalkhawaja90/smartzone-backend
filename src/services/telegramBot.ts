@@ -8,7 +8,7 @@ if (token) {
   bot = new TelegramBot(token);
 }
 
-// عداد مباشر وبسيط بدون تعقيدات
+// عداد مباشر للأداء
 let winCount = 0;
 let lossCount = 0;
 
@@ -25,7 +25,7 @@ export const generateOneTimeInviteLink = async (): Promise<string | null> => {
   }
 };
 
-// 1. رسالة التوصية بالشكل المطلوب بالضبط
+// 1. رسالة التوصية بالشكل المطلوب
 export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer): Promise<boolean> => {
   if (!bot || !CHANNEL_ID) return false;
 
@@ -63,34 +63,49 @@ export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer):
   }
 };
 
-// 2. تحديثات الأهداف والستوب مع عداد الصفقات الرابحة والخاسرة فقط
+// 2. تحديثات الأهداف والستوب مع النسبة المئوية وسجل الأداء
 export const sendTradeUpdateToTelegram = async (
   event: 'FILLED' | 'TP1' | 'TP2' | 'TP3' | 'SL' | 'BE' | 'TRAILING_TP1',
   opp: any,
-  _tradeProfitPct?: number
+  tradeProfitPct?: number
 ) => {
   if (!bot || !CHANNEL_ID) return;
 
   try {
     const symbol = (opp.symbol || '').toUpperCase();
+    const pctText = tradeProfitPct !== undefined ? ` (${tradeProfitPct > 0 ? '+' : ''}${tradeProfitPct}%)` : '';
 
-    // يتم احتساب الصفقة رابحة لمرة واحدة فقط عند حسم TP1
+    // احتساب الصفقات الرابحة والخاسرة بدقة
     if (event === 'TP1') winCount++;
     if (event === 'SL') lossCount++;
 
     let updateText = '';
-    if (event === 'FILLED') updateText = `⚡ *تم تفعيل أمر الدخول لعملة* #${symbol}`;
-    if (event === 'TP1') updateText = `🎯 *تم تحقيق الهدف الأول (TP1) لعملة* #${symbol} ➔ تأمين الدخول`;
-    if (event === 'TP2') updateText = `🚀 *تم تحقيق الهدف الثاني (TP2) لعملة* #${symbol}`;
-    if (event === 'TP3') updateText = `👑 *تم تحقيق الهدف النهائي (TP3) لعملة* #${symbol}`;
-    if (event === 'SL') updateText = `🛑 *ضرب وقف الخسارة (SL) لعملة* #${symbol}`;
-    if (event === 'BE') updateText = `🛡️ *إغلاق على نقطة الدخول لعملة* #${symbol}`;
-    if (event === 'TRAILING_TP1') updateText = `🔒 *إغلاق بربح محجوز لعملة* #${symbol}`;
+    if (event === 'FILLED') {
+      updateText = `⚡ *تم تفعيل أمر الشراء لعملة* #${symbol}\n💵 *سعر الدخول:* \`${opp.entryZone?.max ?? opp.currentPrice}\``;
+    }
+    if (event === 'TP1') {
+      updateText = `🎯 *تم تحقيق الهدف الأول (TP1) لعملة* #${symbol} *${pctText}*\n✅ *تم إغلاق 50% من العقد وتأمين الوقف على سعر الدخول (Break-Even).*`;
+    }
+    if (event === 'TP2') {
+      updateText = `🚀 *تم تحقيق الهدف الثاني (TP2) لعملة* #${symbol}\n🔒 *تم رفع الوقف لحجز أرباح TP1.*`;
+    }
+    if (event === 'TP3') {
+      updateText = `👑 *تم تحقيق الهدف النهائي (TP3) بنجاح لعملة* #${symbol} *${pctText}*\n💰 *إغلاق كامل الصفقة بأقصى ربح.*`;
+    }
+    if (event === 'SL') {
+      updateText = `🛑 *ضرب وقف الخسارة (SL) لعملة* #${symbol} *${pctText}*`;
+    }
+    if (event === 'BE') {
+      updateText = `🛡️ *إغلاق المتبقي على الدخول لعملة* #${symbol}\n✨ *الصفقة أغلقت بصافي ربح مؤمّن من الهدف الأول.*`;
+    }
+    if (event === 'TRAILING_TP1') {
+      updateText = `🔒 *إغلاق المتبقي على ربح محجوز (TP1) لعملة* #${symbol} *${pctText}*`;
+    }
 
     const message = 
 `${updateText}
 
-📊 *سجل الأداء:*
+📊 *سجل الأداء الإجمالي:*
 ✅ *الصفقات الرابحة:* \`${winCount}\`
 ❌ *الصفقات الخاسرة:* \`${lossCount}\``;
 
