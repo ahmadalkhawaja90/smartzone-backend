@@ -164,7 +164,7 @@ const detectFVGs = (candles: CandleData[], startIdx: number, endIdx: number): FV
 };
 
 // ==========================================
-// 4. خوارزمية تحليل ICT الذكية (منتصف الفجوة CE)
+// 4. خوارزمية تحليل ICT الذكية (الدخول من أعلى الفجوة FVG Top)
 // ==========================================
 export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe: string) => {
   if (candles.length < 50) return null;
@@ -215,7 +215,7 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
 
           const fvgs = detectFVGs(candles, sweepNode.index, mssIdx);
           const validFVG = fvgs.reverse().find(f => {
-            if (f.type !== 'BULLISH' || f.top > equilibrium) return false;
+            if (f.type !== 'BULLISH' || f.bottom > equilibrium) return false;
             
             let closed = false;
             for (let m = f.startIndex + 2; m < candles.length - 1; m++) {
@@ -225,11 +225,11 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
           });
 
           if (validFVG) {
-            // الدخول عند منتصف الفجوة (50% Consequent Encroachment)
-            const entryPrice = parseFloat(((validFVG.top + validFVG.bottom) / 2).toFixed(6));
+            // الدخول مباشرة عند أعلى الفجوة السعرية لالتقاط أي ارتداد
+            const entryPrice = parseFloat(validFVG.top.toFixed(6));
 
-            // التأكد من أن السعر داخل منطقة الخصم ولم يكسر قاع الفجوة
-            if (currentPrice <= equilibrium && currentPrice >= validFVG.bottom) {
+            // التأكد من أن السعر لم يكسر قاع الفجوة
+            if (currentPrice >= validFVG.bottom) {
               const stopLoss = parseFloat((impulseLow * 0.997).toFixed(6));
               const risk = entryPrice - stopLoss;
               
@@ -253,14 +253,14 @@ export const analyzeICTSetup = (candles: CandleData[], symbol: string, timeframe
                     type: 'SPOT_BUY' as const, currentPrice,
                     entryZone: { min: parseFloat(validFVG.bottom.toFixed(6)), max: entryPrice },
                     stopLoss, targets: { tp1, tp2, tp3 },
-                    riskRewardRatio: '1:3.0', confluenceScore: 98,
+                    riskRewardRatio: '1:2.5', confluenceScore: 98,
                     fulfilledConditions: [
                       { title: 'Liquidity Sweep', description: `سحب سيولة القاع $${prevLow.price}` },
                       { title: 'True MSS', description: `كسر حقيقي للهيكل فوق $${mssHigh.price}` },
-                      { title: 'Mid-FVG (CE 50%)', description: `دخول مؤسسي دقيق من منتصف الفجوة السعرية` },
+                      { title: 'FVG Re-test', description: `دخول عند أعلى الفجوة السعرية (FVG Top)` },
                     ],
                     analysisReasons: {
-                      entryReason: `شراء معلق Limit عند منتصف الفجوة السعرية $${entryPrice}.`,
+                      entryReason: `شراء معلق Limit عند قمة الفجوة السعرية $${entryPrice}.`,
                       stopLossReason: `وقف أسفل قاع السحب $${stopLoss}.`,
                       takeProfitReason: `TP1 (إغلاق 50% وتأمين الدخول): $${tp1} | TP2: $${tp2} | TP3: $${tp3}`
                     },
