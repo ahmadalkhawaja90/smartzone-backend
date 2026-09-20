@@ -75,7 +75,7 @@ const trackActiveTrades = async () => {
       if (!currentPrice) continue;
 
       const entryPrice = opp.entryZone.max;
-      const allocatedCapital = 50; // حجم الدخول الثابت بالدولار
+      const allocatedCapital = 150; // تم التعديل إلى 150 دولار (30% من المحفظة)
       const totalQty = allocatedCapital / entryPrice;
 
       // ==========================================
@@ -86,12 +86,14 @@ const trackActiveTrades = async () => {
         if (currentPrice <= opp.stopLoss) {
           await placeMarketSellOrder(opp.symbol, totalQty);
           const lossPct = parseFloat((((opp.stopLoss - entryPrice) / entryPrice) * 100).toFixed(2));
+          const lossAmountUsd = parseFloat((allocatedCapital * (lossPct / 100)).toFixed(2));
+
           opp.status = 'HIT_SL';
           opp.profitPercentage = lossPct;
           opp.closedAt = new Date();
           await opp.save();
-          console.log(`🛑 [Stop Loss Hit] ضرب وقف الخسارة لـ ${opp.symbol} (${lossPct}%)`);
-          await sendTradeUpdateToTelegram('SL', opp, lossPct);
+          console.log(`🛑 [Stop Loss Hit] ضرب وقف الخسارة لـ ${opp.symbol} (${lossPct}% | ${lossAmountUsd}$)`);
+          await sendTradeUpdateToTelegram('SL', opp, lossPct, lossAmountUsd);
           continue;
         }
 
@@ -101,12 +103,15 @@ const trackActiveTrades = async () => {
           await placeMarketSellOrder(opp.symbol, sellQty);
 
           const tp1ProfitPct = parseFloat((((opp.targets.tp1 - entryPrice) / entryPrice) * 100).toFixed(2));
+          // الربح المحقق بالدولار لنصف الكمية المباعة
+          const tp1RealizedUsd = parseFloat(((allocatedCapital * 0.5) * (tp1ProfitPct / 100)).toFixed(2));
+
           opp.status = 'BREAK_EVEN';
           opp.currentStopLoss = entryPrice;
-          opp.profitPercentage = tp1ProfitPct; // حفظ نسبة ربح النصف المحجوز
+          opp.profitPercentage = tp1ProfitPct; 
           await opp.save();
-          console.log(`🎯 [TP1 Hit & 50% Sold] تم بيع 50% وتأمين الدخول لـ ${opp.symbol} (+${tp1ProfitPct}%)`);
-          await sendTradeUpdateToTelegram('TP1', opp, tp1ProfitPct);
+          console.log(`🎯 [TP1 Hit & 50% Sold] تم بيع 50% وتأمين الدخول لـ ${opp.symbol} (+${tp1ProfitPct}% | +${tp1RealizedUsd}$)`);
+          await sendTradeUpdateToTelegram('TP1', opp, tp1ProfitPct, tp1RealizedUsd);
           continue;
         }
       }
@@ -120,14 +125,16 @@ const trackActiveTrades = async () => {
           const remainingQty = totalQty * 0.50;
           await placeMarketSellOrder(opp.symbol, remainingQty);
 
-          // احتساب العائد الإجمالي الفعلي للصفقة (النصف تم بيعه بربح عند TP1 والنصف بربح 0%)
-          const tp1Gain = (opp.profitPercentage || 0) * 0.5;
+          // إجمالي ربح الصفقة الكاملة هو نصف ربح TP1 (لأن النصف الآخر خرج عند 0%)
+          const netTradePct = parseFloat(((opp.profitPercentage || 0) * 0.5).toFixed(2));
+          const totalRealizedUsd = parseFloat((allocatedCapital * (netTradePct / 100)).toFixed(2));
+
           opp.status = 'CLOSED_BE';
-          opp.profitPercentage = parseFloat(tp1Gain.toFixed(2));
+          opp.profitPercentage = netTradePct;
           opp.closedAt = new Date();
           await opp.save();
-          console.log(`🛡️ [Closed at BE] خروج المتبقي على الدخول لـ ${opp.symbol} (صافي ربح الصفقة: +${tp1Gain}%)`);
-          await sendTradeUpdateToTelegram('BE', opp, opp.profitPercentage);
+          console.log(`🛡️ [Closed at BE] خروج المتبقي على الدخول لـ ${opp.symbol} (صافي الربح: +${netTradePct}% | +${totalRealizedUsd}$)`);
+          await sendTradeUpdateToTelegram('BE', opp, netTradePct, totalRealizedUsd);
           continue;
         }
 
@@ -152,12 +159,14 @@ const trackActiveTrades = async () => {
           await placeMarketSellOrder(opp.symbol, remainingQty);
 
           const securedProfitPct = parseFloat((((opp.targets.tp1 - entryPrice) / entryPrice) * 100).toFixed(2));
+          const totalRealizedUsd = parseFloat((allocatedCapital * (securedProfitPct / 100)).toFixed(2));
+
           opp.status = 'CLOSED_TRAILING_TP1';
           opp.profitPercentage = securedProfitPct;
           opp.closedAt = new Date();
           await opp.save();
-          console.log(`🔒 [Trailing SL Hit at TP1] تم إغلاق المتبقي على ربح TP1 لـ ${opp.symbol} (+${securedProfitPct}%)`);
-          await sendTradeUpdateToTelegram('TRAILING_TP1', opp, securedProfitPct);
+          console.log(`🔒 [Trailing SL Hit at TP1] إغلاق المتبقي على ربح TP1 لـ ${opp.symbol} (+${securedProfitPct}% | +${totalRealizedUsd}$)`);
+          await sendTradeUpdateToTelegram('TRAILING_TP1', opp, securedProfitPct, totalRealizedUsd);
           continue;
         }
 
@@ -167,12 +176,16 @@ const trackActiveTrades = async () => {
           await placeMarketSellOrder(opp.symbol, remainingQty);
 
           const tp3ProfitPct = parseFloat((((opp.targets.tp3 - entryPrice) / entryPrice) * 100).toFixed(2));
+          // احتساب متوسط العائد للنصفين: نصف عند TP1 ونصف عند TP3
+          const overallPct = parseFloat((((opp.profitPercentage || 0) * 0.5) + (tp3ProfitPct * 0.5)).toFixed(2));
+          const totalRealizedUsd = parseFloat((allocatedCapital * (overallPct / 100)).toFixed(2));
+
           opp.status = 'HIT_TP3';
-          opp.profitPercentage = tp3ProfitPct;
+          opp.profitPercentage = overallPct;
           opp.closedAt = new Date();
           await opp.save();
-          console.log(`👑 [TP3 Hit] إغلاق كامل الصفقة بنجاح تام لـ ${opp.symbol} (+${tp3ProfitPct}%)`);
-          await sendTradeUpdateToTelegram('TP3', opp, tp3ProfitPct);
+          console.log(`👑 [TP3 Hit] إغلاق كامل الصفقة بنجاح لـ ${opp.symbol} (+${overallPct}% | +${totalRealizedUsd}$)`);
+          await sendTradeUpdateToTelegram('TP3', opp, overallPct, totalRealizedUsd);
         }
       }
     } catch (error: any) {
