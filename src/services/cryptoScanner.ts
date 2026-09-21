@@ -14,7 +14,7 @@ export interface CandleData {
 }
 
 // ==========================================================
-// 1. جلب قائمة أفضل 60 زوج USDT نشط
+// 1. جلب قائمة أفضل 50 زوج USDT نشط
 // ==========================================================
 const CORE_TOP_PAIRS = [
   'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 
@@ -41,35 +41,23 @@ export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
     const dynamicTop = res.data.result.list
       .filter((item: any) => item.symbol.endsWith('USDT') && !blacklist.includes(item.symbol))
       .sort((a: any, b: any) => parseFloat(b.turnover24h) - parseFloat(a.turnover24h))
-      .slice(0, 60)
+      .slice(0, 50)
       .map((item: any) => item.symbol);
 
-    return Array.from(new Set([...CORE_TOP_PAIRS, ...dynamicTop])).slice(0, 60);
+    return Array.from(new Set([...CORE_TOP_PAIRS, ...dynamicTop])).slice(0, 50);
   } catch (error) {
     return CORE_TOP_PAIRS;
   }
 };
 
 // ==========================================================
-// 2. جلب الشموع البيانية
+// 2. جلب الشموع البيانية (Bybit مع OKX كخيار احتياطي)
 // ==========================================================
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const toBybitInterval = (interval: string): string => {
-  if (interval === '1h') return '60';
-  if (interval === '4h') return '240';
-  return interval;
-};
-
-const toOkxInterval = (interval: string): string => {
-  if (interval === '1h') return '1H';
-  if (interval === '4h') return '4H';
-  return interval;
-};
-
-const fetchCandlesFromBybit = async (symbol: string, interval: string, limit: number): Promise<CandleData[]> => {
+const fetchCandlesFromBybit = async (symbol: string, interval = '240', limit = 250): Promise<CandleData[]> => {
   const res = await axios.get('https://api.bybit.com/v5/market/kline', {
-    params: { category: 'spot', symbol, interval: toBybitInterval(interval), limit },
+    params: { category: 'spot', symbol, interval, limit },
     headers: { 'User-Agent': 'Mozilla/5.0' },
     timeout: 8000,
   });
@@ -88,10 +76,10 @@ const fetchCandlesFromBybit = async (symbol: string, interval: string, limit: nu
     .reverse();
 };
 
-const fetchCandlesFromOkx = async (symbol: string, interval: string, limit: number): Promise<CandleData[]> => {
+const fetchCandlesFromOkx = async (symbol: string, interval = '4H', limit = 250): Promise<CandleData[]> => {
   const okxSymbol = symbol.replace('USDT', '') + '-USDT';
   const res = await axios.get('https://www.okx.com/api/v5/market/candles', {
-    params: { instId: okxSymbol, bar: toOkxInterval(interval), limit },
+    params: { instId: okxSymbol, bar: interval, limit },
     headers: { 'User-Agent': 'Mozilla/5.0' },
     timeout: 8000,
   });
@@ -110,12 +98,12 @@ const fetchCandlesFromOkx = async (symbol: string, interval: string, limit: numb
     .reverse();
 };
 
-const fetchCandles = async (symbol: string, interval = '4h', limit = 100): Promise<CandleData[]> => {
+const fetchCandles = async (symbol: string, interval = '240', limit = 250): Promise<CandleData[]> => {
   try {
     return await fetchCandlesFromBybit(symbol, interval, limit);
   } catch {
     try {
-      return await fetchCandlesFromOkx(symbol, interval, limit);
+      return await fetchCandlesFromOkx(symbol, '4H', limit);
     } catch {
       return [];
     }
@@ -123,213 +111,151 @@ const fetchCandles = async (symbol: string, interval = '4h', limit = 100): Promi
 };
 
 // ==========================================
-// 3. أدوات التحليل المؤسسي (ICT Elements)
+// 3. الدوال الرياضية للمؤشرات الفنية (EMA & RSI)
 // ==========================================
-interface SwingPoint {
-  index: number;
-  price: number;
-  type: 'HIGH' | 'LOW';
-}
+const calculateEMA = (candles: CandleData[], period: number): (number | null)[] => {
+  const k = 2 / (period + 1);
+  const ema: (number | null)[] = new Array(candles.length).fill(null);
+  if (candles.length < period) return ema;
 
-interface FVG {
-  startIndex: number;
-  top: number;
-  bottom: number;
-  type: 'BULLISH';
-}
+  let sum = 0;
+  for (let i = 0; i < period; i++) sum += candles[i].close;
+  ema[period - 1] = sum / period;
 
-interface OrderBlock {
-  index: number;
-  top: number;
-  bottom: number;
-}
-
-const findSwings = (candles: CandleData[], leftRight = 2): SwingPoint[] => {
-  const swings: SwingPoint[] = [];
-  for (let i = leftRight; i < candles.length - leftRight; i++) {
-    const isHigh = candles.slice(i - leftRight, i + leftRight + 1).every((c, idx) => idx === leftRight || c.high <= candles[i].high);
-    const isLow = candles.slice(i - leftRight, i + leftRight + 1).every((c, idx) => idx === leftRight || c.low >= candles[i].low);
-
-    if (isHigh) swings.push({ index: i, price: candles[i].high, type: 'HIGH' });
-    if (isLow) swings.push({ index: i, price: candles[i].low, type: 'LOW' });
-  }
-  return swings;
-};
-
-const detectFVGs = (candles: CandleData[], startIdx: number, endIdx: number): FVG[] => {
-  const fvgs: FVG[] = [];
-  for (let i = startIdx; i < endIdx - 2; i++) {
-    const c1 = candles[i];
-    const c3 = candles[i + 2];
-
-    if (c1.high < c3.low) {
-      fvgs.push({ startIndex: i, top: c3.low, bottom: c1.high, type: 'BULLISH' });
+  for (let i = period; i < candles.length; i++) {
+    const prevEma = ema[i - 1];
+    if (prevEma !== null) {
+      ema[i] = candles[i].close * k + prevEma * (1 - k);
     }
   }
-  return fvgs;
+  return ema;
 };
 
-const findBullishOrderBlock = (candles: CandleData[], startIdx: number, endIdx: number): OrderBlock | null => {
-  for (let i = endIdx - 1; i >= startIdx; i--) {
-    const c = candles[i];
-    if (c.close < c.open) {
-      return { index: i, top: Math.max(c.open, c.close), bottom: c.low };
+const calculateRSI = (candles: CandleData[], period = 14): (number | null)[] => {
+  const rsi: (number | null)[] = new Array(candles.length).fill(null);
+  if (candles.length < period + 1) return rsi;
+
+  let gains = 0;
+  let losses = 0;
+
+  for (let i = 1; i <= period; i++) {
+    const diff = candles[i].close - candles[i - 1].close;
+    if (diff >= 0) gains += diff;
+    else losses += Math.abs(diff);
+  }
+
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+  rsi[period] = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
+
+  for (let i = period + 1; i < candles.length; i++) {
+    const diff = candles[i].close - candles[i - 1].close;
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? Math.abs(diff) : 0;
+
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+
+    if (avgLoss === 0) {
+      rsi[i] = 100;
+    } else {
+      const rs = avgGain / avgLoss;
+      rsi[i] = 100 - (100 / (1 + rs));
     }
   }
-  return null;
-};
-
-const isOBUnmitigated = (candles: CandleData[], ob: OrderBlock, uptoIdx: number): boolean => {
-  for (let i = ob.index + 1; i < uptoIdx; i++) {
-    if (candles[i].low <= ob.bottom) return false;
-  }
-  return true;
+  return rsi;
 };
 
 // ==========================================
-// 4. خوارزمية OB + FVG Confluence المعتمدة والمصححة
+// 4. خوارزمية فحص الارتداد الناجحة (EMA 50 Pullback + RSI)
 // ==========================================
-export const analyzeOBFVGSetup = (candles: CandleData[], symbol: string, timeframe: string) => {
-  if (candles.length < 50) return null;
+export const analyzeEMAPullbackSetup = (candles: CandleData[], symbol: string, timeframe = '4h') => {
+  if (candles.length < 210) return null;
 
-  const swings = findSwings(candles, 2);
-  if (swings.length < 5) return null;
+  const idx = candles.length - 1;
+  const c = candles[idx];
+  const prevC = candles[idx - 1];
 
-  const currentPrice = candles[candles.length - 1].close;
+  const ema50Arr = calculateEMA(candles, 50);
+  const ema200Arr = calculateEMA(candles, 200);
+  const rsiArr = calculateRSI(candles, 14);
+
+  const ema50 = ema50Arr[idx];
+  const ema200 = ema200Arr[idx];
+  const rsi = rsiArr[idx];
+  const prevEma50 = ema50Arr[idx - 1];
+
+  if (!ema50 || !ema200 || !rsi || !prevEma50) return null;
+
+  // 1. شرط الاتجاه العام الصاعد: السعر و EMA 50 فوق EMA 200
+  const isUptrend = c.close > ema200 && ema50 > ema200;
+  if (!isUptrend) return null;
+
+  // 2. ملامسة خط EMA 50
+  const touchedEMA50 = (prevC.low <= prevEma50 * 1.01) || (c.low <= ema50 * 1.01);
+  if (!touchedEMA50) return null;
+
+  // 3. وصول RSI إلى تشبع بيعي تحت 45 خلال آخر 3 شموع
+  const rsiDip = rsiArr.slice(idx - 2, idx + 1).some((r) => r !== null && r <= 45);
+  if (!rsiDip) return null;
+
+  // 4. شمعة ارتدادية خضراء صريحة
+  const isBullishReversal = c.close > c.open && c.close > prevC.close;
+  if (!isBullishReversal) return null;
+
+  const entryPrice = parseFloat(c.close.toFixed(6));
+  const lowestLow = Math.min(c.low, prevC.low);
+  const stopLoss = parseFloat((lowestLow * 0.995).toFixed(6));
+  const risk = entryPrice - stopLoss;
+
+  if (risk <= 0) return null;
+
+  // فلترة مسافة الوقف المئوية (بين 1.5% و 6.5%)
+  const riskPct = (risk / entryPrice) * 100;
+  if (riskPct < 1.5 || riskPct > 6.5) return null;
+
+  // الهدف الكامل عند عائد 2.0R
+  const tp = parseFloat((entryPrice + risk * 2.0).toFixed(6));
   const baseAsset = symbol.replace('USDT', '');
-  const recentSwings = swings.slice(-15);
 
-  for (let i = recentSwings.length - 1; i >= 2; i--) {
-    const sweepNode = recentSwings[i];
-    if (sweepNode.type !== 'LOW') continue;
-
-    let prevLow: SwingPoint | null = null;
-    let mssHigh: SwingPoint | null = null;
-
-    for (let j = i - 1; j >= 0; j--) {
-      if (recentSwings[j].type === 'LOW' && sweepNode.price < recentSwings[j].price) {
-        prevLow = recentSwings[j];
-        let maxPrice = -Infinity;
-        for (let k = j; k <= i; k++) {
-          if (recentSwings[k].type === 'HIGH' && recentSwings[k].price > maxPrice) {
-            maxPrice = recentSwings[k].price;
-            mssHigh = recentSwings[k];
-          }
-        }
-        break; 
-      }
-    }
-
-    if (!prevLow || !mssHigh) continue;
-
-    let mssIdx = -1;
-    let highestAfterMSS = sweepNode.price;
-
-    for (let c = sweepNode.index + 1; c < candles.length - 1; c++) {
-      if (candles[c].high > highestAfterMSS) highestAfterMSS = candles[c].high;
-      if (mssIdx === -1 && candles[c].close > mssHigh.price) {
-        mssIdx = c;
-      }
-    }
-
-    // شرط حداثة كسر الهيكل
-    if (mssIdx === -1 || (candles.length - 1 - mssIdx > 12)) continue;
-
-    const impulseLow = sweepNode.price;
-    const equilibrium = impulseLow + (highestAfterMSS - impulseLow) * 0.5;
-
-    // 1. استبعاد الصفقات التي طار سعرها بعيداً أو كسر قمة الهيكل
-    if (currentPrice > equilibrium || currentPrice > mssHigh.price) continue;
-
-    // استخراج وتأكيد الأوردر بلوك
-    const ob = findBullishOrderBlock(candles, sweepNode.index, mssIdx);
-    if (!ob) continue;
-    if (!isOBUnmitigated(candles, ob, mssIdx)) continue;
-
-    // رصد الفجوة المتقاطعة
-    const fvgs = detectFVGs(candles, sweepNode.index, mssIdx);
-    const overlappingFVG = fvgs.find(
-      (f) => f.bottom <= ob.top && f.top >= ob.bottom && f.bottom <= equilibrium
-    );
-    if (!overlappingFVG) continue;
-
-    // حدود منطقة التقاطع المشتركة
-    const zoneTop = Math.min(ob.top, overlappingFVG.top);
-    const zoneBottom = Math.max(ob.bottom, overlappingFVG.bottom);
-    if (zoneTop <= zoneBottom) continue;
-
-    // نقطة الدخول: منتصف منطقة التقاطع
-    const entryPrice = parseFloat(((zoneTop + zoneBottom) / 2).toFixed(6));
-
-    // 2. استبعاد الصفقات المنتهية التي لمست الدخول وصعدت للقمة مسبقاً
-    let alreadyFilledAndBounced = false;
-    for (let c = mssIdx + 1; c < candles.length - 1; c++) {
-      if (candles[c].low <= entryPrice && candles[c].high >= mssHigh.price) {
-        alreadyFilledAndBounced = true;
-        break;
-      }
-    }
-    if (alreadyFilledAndBounced) continue;
-
-    // لا ندخل إذا كان السعر الحالي كسر قاع التقاطع بالفعل
-    if (currentPrice < zoneBottom) continue;
-
-    // 3. تصحيح الوقف: أسفل قاع السحب الهيكلي (Impulse Low) وليس قاع الشمعة الداخلية
-    const stopLoss = parseFloat((impulseLow * 0.997).toFixed(6));
-    const risk = entryPrice - stopLoss;
-
-    if (risk <= 0) continue;
-
-    // التحقق من أن نسبة الوقف منطقية في السبوت (بين 1.2% و 7.0%)
-    const riskPct = (risk / entryPrice) * 100;
-    if (riskPct < 1.2 || riskPct > 7.0) continue;
-
-    // الأهداف الاستراتيجية (الخروج الكامل عند 1.5R)
-    const tp1 = parseFloat((entryPrice + risk * 1.5).toFixed(6));
-    const tp2 = parseFloat((entryPrice + risk * 2.5).toFixed(6));
-    const tp3 = parseFloat((entryPrice + risk * 4.0).toFixed(6));
-
-    return {
-      opportunity: {
-        symbol,
-        baseAsset,
-        market: 'crypto' as const,
-        timeframe,
-        type: 'SPOT_BUY' as const,
-        currentPrice,
-        entryZone: { min: parseFloat(zoneBottom.toFixed(6)), max: entryPrice },
-        stopLoss,
-        targets: { tp1, tp2, tp3 },
-        riskRewardRatio: '1:1.5',
-        confluenceScore: 99,
-        fulfilledConditions: [
-          { title: 'Liquidity Sweep', description: `سحب سيولة القاع $${prevLow.price}` },
-          { title: 'True MSS', description: `كسر حقيقي للهيكل الصاعد فوق $${mssHigh.price}` },
-          { title: 'OB + FVG Confluence', description: `تقاطع متطابق بين كتلة الأوامر والفجوة السعرية` },
-          { title: 'Mid-Zone Entry', description: `دخول مؤسسي من منتصف منطقة التقاطع (50% CE)` },
-        ],
-        analysisReasons: {
-          entryReason: `شراء Limit عند منتصف تقاطع OB+FVG بسعر $${entryPrice}.`,
-          stopLossReason: `وقف أسفل قاع السحب الرئيسي (مخاطرة ${riskPct.toFixed(2)}%): $${stopLoss}.`,
-          takeProfitReason: `TP1 (هدف الخروج الكامل): $${tp1} بمعدل عائد 1.5R.`
-        },
-        status: 'PENDING_ENTRY' as const,
+  return {
+    opportunity: {
+      symbol,
+      baseAsset,
+      market: 'crypto' as const,
+      timeframe,
+      type: 'SPOT_BUY' as const,
+      currentPrice: entryPrice,
+      entryZone: { min: parseFloat((entryPrice * 0.998).toFixed(6)), max: entryPrice },
+      stopLoss,
+      targets: { tp1: tp, tp2: tp, tp3: tp },
+      riskRewardRatio: '1:2.0',
+      confluenceScore: 96,
+      fulfilledConditions: [
+        { title: 'Macro Uptrend', description: `السعر أعلى من متوسط EMA 200` },
+        { title: 'EMA 50 Pullback', description: `إعادة اختبار ناجحة لدعم متوسط EMA 50` },
+        { title: 'RSI Oversold Dip', description: `ارتداد بعد وصول مؤشر القوة النسبية تحت 45` },
+        { title: 'Bullish Confirmation', description: `شمعة ارتدادية خضراء أغلقت أعلى من سابقتها` },
+      ],
+      analysisReasons: {
+        entryReason: `شراء مباشر / Limit بسعر $${entryPrice} عند ارتداد EMA 50.`,
+        stopLossReason: `وقف خسارة أسفل قاع الارتداد بنسبة ${riskPct.toFixed(2)}%: $${stopLoss}.`,
+        takeProfitReason: `هدف نهائي كامل (2.0R): $${tp}.`
       },
-      chartOptions: {
-        symbol,
-        timeframe,
-        entry: entryPrice,
-        stopLoss,
-        tp1,
-        tp2,
-        tp3,
-        fvgTop: zoneTop,
-        fvgBottom: zoneBottom
-      },
-    };
-  }
-
-  return null;
+      status: 'PENDING_ENTRY' as const,
+    },
+    chartOptions: {
+      symbol,
+      timeframe,
+      entry: entryPrice,
+      stopLoss,
+      tp1: tp,
+      tp2: tp,
+      tp3: tp,
+      fvgTop: entryPrice,
+      fvgBottom: stopLoss,
+    },
+  };
 };
 
 // ==========================================
@@ -337,7 +263,7 @@ export const analyzeOBFVGSetup = (candles: CandleData[], symbol: string, timefra
 // ==========================================
 export const runFullCryptoScan = async () => {
   const targetTimeframes = ['4h'];
-  console.log('🚀 [Crypto Scanner] بدء فحص استراتيجية OB + FVG Confluence المصححة (4H)...');
+  console.log('🚀 [Crypto Scanner] بدء فحص استراتيجية الارتداد (EMA 50 Pullback + RSI 4H)...');
 
   let symbols: string[] = [];
   try {
@@ -352,10 +278,10 @@ export const runFullCryptoScan = async () => {
   for (const symbol of symbols) {
     for (const tf of targetTimeframes) {
       try {
-        const candles = await fetchCandles(symbol, tf, 120);
-        if (candles.length < 50) continue;
+        const candles = await fetchCandles(symbol, '240', 250);
+        if (candles.length < 210) continue;
 
-        const result = analyzeOBFVGSetup(candles, symbol, tf);
+        const result = analyzeEMAPullbackSetup(candles, symbol, tf);
 
         if (result) {
           const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -377,7 +303,7 @@ export const runFullCryptoScan = async () => {
           let orderId: string | undefined = undefined;
           if (orderResult.success && orderResult.orderId) {
             orderId = orderResult.orderId;
-            console.log(`⚡ [Binance] تم وضع أمر شراء Limit لـ ${symbol} بسعر $${entryPrice} (Order ID: ${orderId})`);
+            console.log(`⚡ [Binance] تم وضع أمر شراء لـ ${symbol} بسعر $${entryPrice} (Order ID: ${orderId})`);
           } else {
             console.warn(`⚠️ [Binance] تنبيه التنفيذ لـ ${symbol}: ${orderResult.error}`);
           }
@@ -388,7 +314,7 @@ export const runFullCryptoScan = async () => {
           });
 
           discoveredCount++;
-          console.log(`🎯 [فرصة 4H OB+FVG مصححة]: ${symbol} - تم الحفظ والتجهيز للإرسال.`);
+          console.log(`🎯 [فرصة ارتداد EMA 50]: ${symbol} - تم الحفظ والتجهيز للإرسال.`);
 
           const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
           await sendOpportunityToTelegram(createdOpp, chartBuffer);
@@ -396,9 +322,9 @@ export const runFullCryptoScan = async () => {
       } catch (error) {
         // الاستمرار في الفحص في حال وجود أخطاء في زوج معين
       }
-      await sleep(150);
+      sleep(150);
     }
   }
 
-  console.log(`✨ [Crypto Scanner] اكتمل فحص 4H: رُصدت ${discoveredCount} فرصة سليمة.`);
+  console.log(`✨ [Crypto Scanner] اكتمل فحص 4H: رُصدت ${discoveredCount} فرصة ارتداد ناجحة.`);
 };
