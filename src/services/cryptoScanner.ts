@@ -187,7 +187,7 @@ const isOBUnmitigated = (candles: CandleData[], ob: OrderBlock, uptoIdx: number)
 };
 
 // ==========================================
-// 4. خوارزمية OB + FVG Confluence المعتمدة
+// 4. خوارزمية OB + FVG Confluence المعتمدة والمصححة
 // ==========================================
 export const analyzeOBFVGSetup = (candles: CandleData[], symbol: string, timeframe: string) => {
   if (candles.length < 50) return null;
@@ -232,17 +232,21 @@ export const analyzeOBFVGSetup = (candles: CandleData[], symbol: string, timefra
       }
     }
 
+    // شرط حداثة كسر الهيكل
     if (mssIdx === -1 || (candles.length - 1 - mssIdx > 12)) continue;
 
     const impulseLow = sweepNode.price;
     const equilibrium = impulseLow + (highestAfterMSS - impulseLow) * 0.5;
 
-    // استخراج وتأكيد الأوردر بلوك البكر
+    // 1. استبعاد الصفقات التي طار سعرها بعيداً أو كسر قمة الهيكل
+    if (currentPrice > equilibrium || currentPrice > mssHigh.price) continue;
+
+    // استخراج وتأكيد الأوردر بلوك
     const ob = findBullishOrderBlock(candles, sweepNode.index, mssIdx);
     if (!ob) continue;
     if (!isOBUnmitigated(candles, ob, mssIdx)) continue;
 
-    // رصد الفجوة المتقاطعة مع الأوردر بلوك داخل منطقة الخصم
+    // رصد الفجوة المتقاطعة
     const fvgs = detectFVGs(candles, sweepNode.index, mssIdx);
     const overlappingFVG = fvgs.find(
       (f) => f.bottom <= ob.top && f.top >= ob.bottom && f.bottom <= equilibrium
@@ -254,16 +258,33 @@ export const analyzeOBFVGSetup = (candles: CandleData[], symbol: string, timefra
     const zoneBottom = Math.max(ob.bottom, overlappingFVG.bottom);
     if (zoneTop <= zoneBottom) continue;
 
-    // الدخول عند منتصف منطقة التقاطع (50% Consequent Encroachment)
+    // نقطة الدخول: منتصف منطقة التقاطع
     const entryPrice = parseFloat(((zoneTop + zoneBottom) / 2).toFixed(6));
 
-    // الوقف المحكم أسفل قاع التقاطع بنسبة 0.3%
-    const stopLoss = parseFloat((zoneBottom * 0.997).toFixed(6));
+    // 2. استبعاد الصفقات المنتهية التي لمست الدخول وصعدت للقمة مسبقاً
+    let alreadyFilledAndBounced = false;
+    for (let c = mssIdx + 1; c < candles.length - 1; c++) {
+      if (candles[c].low <= entryPrice && candles[c].high >= mssHigh.price) {
+        alreadyFilledAndBounced = true;
+        break;
+      }
+    }
+    if (alreadyFilledAndBounced) continue;
+
+    // لا ندخل إذا كان السعر الحالي كسر قاع التقاطع بالفعل
+    if (currentPrice < zoneBottom) continue;
+
+    // 3. تصحيح الوقف: أسفل قاع السحب الهيكلي (Impulse Low) وليس قاع الشمعة الداخلية
+    const stopLoss = parseFloat((impulseLow * 0.997).toFixed(6));
     const risk = entryPrice - stopLoss;
 
-    if (risk <= 0 || currentPrice < zoneBottom) continue;
+    if (risk <= 0) continue;
 
-    // الأهداف الاستراتيجية (الهدف الأساسي 1.5R)
+    // التحقق من أن نسبة الوقف منطقية في السبوت (بين 1.2% و 7.0%)
+    const riskPct = (risk / entryPrice) * 100;
+    if (riskPct < 1.2 || riskPct > 7.0) continue;
+
+    // الأهداف الاستراتيجية (الخروج الكامل عند 1.5R)
     const tp1 = parseFloat((entryPrice + risk * 1.5).toFixed(6));
     const tp2 = parseFloat((entryPrice + risk * 2.5).toFixed(6));
     const tp3 = parseFloat((entryPrice + risk * 4.0).toFixed(6));
@@ -285,11 +306,11 @@ export const analyzeOBFVGSetup = (candles: CandleData[], symbol: string, timefra
           { title: 'Liquidity Sweep', description: `سحب سيولة القاع $${prevLow.price}` },
           { title: 'True MSS', description: `كسر حقيقي للهيكل الصاعد فوق $${mssHigh.price}` },
           { title: 'OB + FVG Confluence', description: `تقاطع متطابق بين كتلة الأوامر والفجوة السعرية` },
-          { title: 'Optimized 50% CE Entry', description: `دخول مؤسسي من منتصف منطقة التقاطع` },
+          { title: 'Mid-Zone Entry', description: `دخول مؤسسي من منتصف منطقة التقاطع (50% CE)` },
         ],
         analysisReasons: {
           entryReason: `شراء Limit عند منتصف تقاطع OB+FVG بسعر $${entryPrice}.`,
-          stopLossReason: `وقف محكم أسفل قاع منطقة التقاطع $${stopLoss}.`,
+          stopLossReason: `وقف أسفل قاع السحب الرئيسي (مخاطرة ${riskPct.toFixed(2)}%): $${stopLoss}.`,
           takeProfitReason: `TP1 (هدف الخروج الكامل): $${tp1} بمعدل عائد 1.5R.`
         },
         status: 'PENDING_ENTRY' as const,
@@ -316,7 +337,7 @@ export const analyzeOBFVGSetup = (candles: CandleData[], symbol: string, timefra
 // ==========================================
 export const runFullCryptoScan = async () => {
   const targetTimeframes = ['4h'];
-  console.log('🚀 [Crypto Scanner] بدء فحص استراتيجية OB + FVG Confluence على فريم 4H...');
+  console.log('🚀 [Crypto Scanner] بدء فحص استراتيجية OB + FVG Confluence المصححة (4H)...');
 
   let symbols: string[] = [];
   try {
@@ -337,7 +358,6 @@ export const runFullCryptoScan = async () => {
         const result = analyzeOBFVGSetup(candles, symbol, tf);
 
         if (result) {
-          // حماية 24 ساعة لعدم تكرار نفس الزوج نظراً لطبيعة فريم الـ 4H
           const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
           const existing = await Opportunity.findOne({
             symbol,
@@ -368,7 +388,7 @@ export const runFullCryptoScan = async () => {
           });
 
           discoveredCount++;
-          console.log(`🎯 [فرصة 4H OB+FVG]: ${symbol} - تم الحفظ والتجهيز للإرسال.`);
+          console.log(`🎯 [فرصة 4H OB+FVG مصححة]: ${symbol} - تم الحفظ والتجهيز للإرسال.`);
 
           const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
           await sendOpportunityToTelegram(createdOpp, chartBuffer);
@@ -380,5 +400,5 @@ export const runFullCryptoScan = async () => {
     }
   }
 
-  console.log(`✨ [Crypto Scanner] اكتمل فحص 4H: رُصدت ${discoveredCount} فرصة ذهبية.`);
+  console.log(`✨ [Crypto Scanner] اكتمل فحص 4H: رُصدت ${discoveredCount} فرصة سليمة.`);
 };
