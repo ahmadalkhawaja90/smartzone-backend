@@ -167,7 +167,7 @@ const calculateRSI = (candles: CandleData[], period = 14): (number | null)[] => 
 };
 
 // ==========================================
-// 4. خوارزمية فحص الارتداد الناجحة (EMA 50 Pullback + RSI)
+// 4. خوارزمية فحص الارتداد (EMA 50 Pullback + RSI)
 // ==========================================
 export const analyzeEMAPullbackSetup = (candles: CandleData[], symbol: string, timeframe = '4h') => {
   if (candles.length < 210) return null;
@@ -195,7 +195,7 @@ export const analyzeEMAPullbackSetup = (candles: CandleData[], symbol: string, t
   const touchedEMA50 = (prevC.low <= prevEma50 * 1.01) || (c.low <= ema50 * 1.01);
   if (!touchedEMA50) return null;
 
-  // 3. وصول RSI إلى تشبع بيعي تحت 45 خلال آخر 3 شموع
+  // 3. وصول RSI إلى تشبع بيعي مؤقت تحت 45 خلال آخر 3 شموع
   const rsiDip = rsiArr.slice(idx - 2, idx + 1).some((r) => r !== null && r <= 45);
   if (!rsiDip) return null;
 
@@ -214,8 +214,10 @@ export const analyzeEMAPullbackSetup = (candles: CandleData[], symbol: string, t
   const riskPct = (risk / entryPrice) * 100;
   if (riskPct < 1.5 || riskPct > 6.5) return null;
 
-  // الهدف الكامل عند عائد 2.0R
-  const tp = parseFloat((entryPrice + risk * 2.0).toFixed(6));
+  // توزيع الأهداف الثلاثة بشكل تصاعدي
+  const tp1 = parseFloat((entryPrice + risk * 1.2).toFixed(6));
+  const tp2 = parseFloat((entryPrice + risk * 2.0).toFixed(6));
+  const tp3 = parseFloat((entryPrice + risk * 3.0).toFixed(6));
   const baseAsset = symbol.replace('USDT', '');
 
   return {
@@ -228,19 +230,19 @@ export const analyzeEMAPullbackSetup = (candles: CandleData[], symbol: string, t
       currentPrice: entryPrice,
       entryZone: { min: parseFloat((entryPrice * 0.998).toFixed(6)), max: entryPrice },
       stopLoss,
-      targets: { tp1: tp, tp2: tp, tp3: tp },
+      targets: { tp1, tp2, tp3 },
       riskRewardRatio: '1:2.0',
-      confluenceScore: 96,
+      confluenceScore: 95,
       fulfilledConditions: [
         { title: 'Macro Uptrend', description: `السعر أعلى من متوسط EMA 200` },
-        { title: 'EMA 50 Pullback', description: `إعادة اختبار ناجحة لدعم متوسط EMA 50` },
-        { title: 'RSI Oversold Dip', description: `ارتداد بعد وصول مؤشر القوة النسبية تحت 45` },
-        { title: 'Bullish Confirmation', description: `شمعة ارتدادية خضراء أغلقت أعلى من سابقتها` },
+        { title: 'EMA 50 Pullback', description: `إعادة اختبار لدعم متوسط EMA 50` },
+        { title: 'RSI Oversold Dip', description: `مؤشر القوة النسبية ارتد من تحت مستوى 45` },
+        { title: 'Bullish Confirmation', description: `إغلاق شمعة ارتداد خضراء صريحة` },
       ],
       analysisReasons: {
-        entryReason: `شراء مباشر / Limit بسعر $${entryPrice} عند ارتداد EMA 50.`,
-        stopLossReason: `وقف خسارة أسفل قاع الارتداد بنسبة ${riskPct.toFixed(2)}%: $${stopLoss}.`,
-        takeProfitReason: `هدف نهائي كامل (2.0R): $${tp}.`
+        entryReason: `شراء عند ارتداد EMA 50 وتأكيد صاعد بسعر $${entryPrice}.`,
+        stopLossReason: `وقف أسفل قاع الارتداد بنسبة ${riskPct.toFixed(2)}%: $${stopLoss}.`,
+        takeProfitReason: `أهداف تصاعدية: TP1 (1.2R): $${tp1} | TP2 (2.0R): $${tp2} | TP3 (3.0R): $${tp3}.`
       },
       status: 'PENDING_ENTRY' as const,
     },
@@ -249,11 +251,9 @@ export const analyzeEMAPullbackSetup = (candles: CandleData[], symbol: string, t
       timeframe,
       entry: entryPrice,
       stopLoss,
-      tp1: tp,
-      tp2: tp,
-      tp3: tp,
-      fvgTop: entryPrice,
-      fvgBottom: stopLoss,
+      tp1,
+      tp2,
+      tp3,
     },
   };
 };
@@ -322,7 +322,7 @@ export const runFullCryptoScan = async () => {
       } catch (error) {
         // الاستمرار في الفحص في حال وجود أخطاء في زوج معين
       }
-      sleep(150);
+      await sleep(150);
     }
   }
 
