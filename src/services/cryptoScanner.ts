@@ -14,8 +14,15 @@ export interface CandleData {
 }
 
 // ==========================================================
-// 1. جلب قائمة أفضل 50 زوج USDT نشط
+// 1. القائمة السوداء + قائمة أفضل 50 زوج USDT نشط
 // ==========================================================
+// 🛑 العملات المستبعدة رسميًا بسبب ضعف الأداء الفني وارتفاع الوقفات
+const BLACKLIST_PAIRS = [
+  'TIAUSDT', 'ATOMUSDT', 'FLOKIUSDT', 'AAVEUSDT', 'ICPUSDT', 
+  'INJUSDT', 'BCHUSDT', 'LTCUSDT', 'XRPUSDT', 'OPUSDT', 
+  'IMXUSDT', 'DYDXUSDT', 'CRVUSDT', 'ADAUSDT'
+];
+
 const CORE_TOP_PAIRS = [
   'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 
   'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'NEARUSDT', 'DOTUSDT',
@@ -36,17 +43,19 @@ export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
       timeout: 10000,
     });
 
-    const blacklist = ['USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'BUSDUSDT', 'EURUSDT', 'DAIUSDT', 'USDEUSDT'];
+    const stableBlacklist = ['USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'BUSDUSDT', 'EURUSDT', 'DAIUSDT', 'USDEUSDT'];
 
     const dynamicTop = res.data.result.list
-      .filter((item: any) => item.symbol.endsWith('USDT') && !blacklist.includes(item.symbol))
+      .filter((item: any) => item.symbol.endsWith('USDT') && !stableBlacklist.includes(item.symbol))
       .sort((a: any, b: any) => parseFloat(b.turnover24h) - parseFloat(a.turnover24h))
       .slice(0, 50)
       .map((item: any) => item.symbol);
 
-    return Array.from(new Set([...CORE_TOP_PAIRS, ...dynamicTop])).slice(0, 50);
+    const merged = Array.from(new Set([...CORE_TOP_PAIRS, ...dynamicTop])).slice(0, 50);
+    // تصفية أزواج القائمة السوداء
+    return merged.filter((sym) => !BLACKLIST_PAIRS.includes(sym));
   } catch (error) {
-    return CORE_TOP_PAIRS;
+    return CORE_TOP_PAIRS.filter((sym) => !BLACKLIST_PAIRS.includes(sym));
   }
 };
 
@@ -265,10 +274,27 @@ export const runFullCryptoScan = async () => {
   const targetTimeframes = ['4h'];
   console.log('🚀 [Crypto Scanner] بدء فحص استراتيجية الارتداد (EMA 50 Pullback + RSI 4H)...');
 
+  // 🛡️ فحص اتجاه قائد السوق (BTC Trend Filter) أولاً قبل فحص أي عملة
+  try {
+    const btcCandles = await fetchCandles('BTCUSDT', '240', 250);
+    if (btcCandles.length >= 50) {
+      const btcEMA50Arr = calculateEMA(btcCandles, 50);
+      const latestBtcPrice = btcCandles[btcCandles.length - 1].close;
+      const latestBtcEma50 = btcEMA50Arr[btcEMA50Arr.length - 1];
+
+      if (latestBtcEma50 && latestBtcPrice < latestBtcEma50) {
+        console.warn(`🛑 [BTC Filter]: سعر البيتكوين ($${latestBtcPrice}) أسفل EMA 50 ($${latestBtcEma50.toFixed(2)}). تم تجميد فتح صفقات جديدة لحماية المحفظة.`);
+        return;
+      }
+    }
+  } catch (error) {
+    console.error('⚠️ [BTC Filter] تعذر جلب شموع البيتكوين، سيتم الاستمرار بحذر.');
+  }
+
   let symbols: string[] = [];
   try {
     symbols = await getActiveUSDTSpotPairs();
-    console.log(`🔍 تم تثبيت ${symbols.length} زوج للفحص المتقدم على فريم 4H.`);
+    console.log(`🔍 تم تثبيت ${symbols.length} زوج مؤهل للفحص (مستبعد منها القائمة السوداء).`);
   } catch (error) {
     return;
   }
@@ -284,6 +310,7 @@ export const runFullCryptoScan = async () => {
         const result = analyzeEMAPullbackSetup(candles, symbol, tf);
 
         if (result) {
+          // 1. التحقق من عدم تكرار نفس العملة خلال 24 ساعة
           const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
           const existing = await Opportunity.findOne({
             symbol,
@@ -297,25 +324,39 @@ export const runFullCryptoScan = async () => {
             continue;
           }
 
+          // 🛑 2. فحص سقف الصفقات المتزامنة في المحفظة (الحد الأقصى 10 صفقات)
+          const activeTradesCount = await Opportunity.countDocuments({
+            status: { $in: ['PENDING_ENTRY', 'ACTIVE', 'BREAK_EVEN', 'TP1_SECURED'] }
+          });
+
+          if (activeTradesCount >= 10) {
+            console.log(`⏸️ [سقف الصفقات]: تم رصد فرصة لـ ${symbol} ولكن تم تجاوزها لأن المحفظة ممتلئة بالكامل (${activeTradesCount}/10).`);
+            continue; // لن يتم الشراء ولن يُرسل شيء للتلغرام
+          }
+
+          // ⚡ 3. تنفيذ الشراء الفعلي على منصة Binance أولاً
           const entryPrice = result.opportunity.entryZone.max;
           const orderResult = await placeLimitBuyOrder(symbol, entryPrice);
 
-          let orderId: string | undefined = undefined;
-          if (orderResult.success && orderResult.orderId) {
-            orderId = orderResult.orderId;
-            console.log(`⚡ [Binance] تم وضع أمر شراء لـ ${symbol} بسعر $${entryPrice} (Order ID: ${orderId})`);
-          } else {
-            console.warn(`⚠️ [Binance] تنبيه التنفيذ لـ ${symbol}: ${orderResult.error}`);
+          // 🛑 4. التحقق الصارم من قبول الأمر على المنصة قبل المتابعة
+          if (!orderResult.success || !orderResult.orderId) {
+            console.warn(`⚠️ [فشل التنفيذ] لم يتم إرسال تنبيه ${symbol} للتلغرام لعدم نجاح أمر المنصة: ${orderResult.error}`);
+            continue; // منع الحفظ ومنع التلغرام إذا لم يُنفذ في بينانس
           }
 
+          const orderId = orderResult.orderId;
+          console.log(`⚡ [Binance] تم تأكيد أمر الشراء لـ ${symbol} بسعر $${entryPrice} (Order ID: ${orderId})`);
+
+          // 💾 5. الحفظ في قاعدة البيانات بالمعرف المؤكد
           const createdOpp = await Opportunity.create({
             ...result.opportunity,
             orderId,
           });
 
           discoveredCount++;
-          console.log(`🎯 [فرصة ارتداد EMA 50]: ${symbol} - تم الحفظ والتجهيز للإرسال.`);
+          console.log(`🎯 [صفقة مؤكدة ومفتوحة]: ${symbol} (${activeTradesCount + 1}/10)`);
 
+          // 📲 6. توليد الشارت وإرسال الإشعار للتلغرام (للصفقة المنفذة فعلياً فقط)
           const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
           await sendOpportunityToTelegram(createdOpp, chartBuffer);
         }
@@ -326,5 +367,5 @@ export const runFullCryptoScan = async () => {
     }
   }
 
-  console.log(`✨ [Crypto Scanner] اكتمل فحص 4H: رُصدت ${discoveredCount} فرصة ارتداد ناجحة.`);
+  console.log(`✨ [Crypto Scanner] اكتمل فحص 4H: نُفذت وأُرسلت ${discoveredCount} صفقة حقيقية.`);
 };
