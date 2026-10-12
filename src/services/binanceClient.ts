@@ -1,13 +1,16 @@
 import axios from 'axios';
 import crypto from 'crypto';
+import { Opportunity } from '../models/Opportunity';
 
 const BASE_URL = 'https://testnet.binance.vision';
 const API_KEY = process.env.BINANCE_TESTNET_API_KEY || '';
 const SECRET_KEY = process.env.BINANCE_TESTNET_SECRET_KEY || '';
 
-// تخصيص رأس المال الافتراضي بـ 500 دولار ونسبة دخول 30% ($150)
-export const VIRTUAL_INITIAL_CAPITAL = 500;
-export const RISK_PERCENT_PER_TRADE = 0.30; 
+// ==========================================================
+// الإعدادات المالية المنضبطة: رأس مال 250$ ونسبة دخول 10% ($25)
+// ==========================================================
+export const VIRTUAL_INITIAL_CAPITAL = 250;
+export const RISK_PERCENT_PER_TRADE = 0.10; 
 
 // ذاكرة تخزين مؤقت لقواعد التداول للرموز لتجنب استدعاء API متكرر
 interface SymbolFilterRules {
@@ -21,6 +24,26 @@ const symbolRulesCache = new Map<string, SymbolFilterRules>();
 
 const generateSignature = (queryString: string): string => {
   return crypto.createHmac('sha256', SECRET_KEY).update(queryString).digest('hex');
+};
+
+// حساب الرصيد التراكمي الفعلي (رأس المال الأصلي + صافي الأرباح المحققة)
+export const calculateDynamicEquity = async (): Promise<number> => {
+  try {
+    const closedTrades = await Opportunity.find({
+      status: { $in: ['CLOSED_BE', 'CLOSED_TRAILING_TP1', 'HIT_TP3', 'HIT_SL'] },
+    }).select('profitPercentage');
+
+    let runningBalance = VIRTUAL_INITIAL_CAPITAL;
+    for (const trade of closedTrades) {
+      const tradeAllocation = runningBalance * RISK_PERCENT_PER_TRADE;
+      const pnl = tradeAllocation * ((trade.profitPercentage || 0) / 100);
+      runningBalance += pnl;
+    }
+
+    return Math.max(runningBalance, 10); // ضمان بقاء قيمة موجبة
+  } catch (error) {
+    return VIRTUAL_INITIAL_CAPITAL;
+  }
 };
 
 // جلب وتخزين فلاتر الرمز (LOT_SIZE, PRICE_FILTER, NOTIONAL)
@@ -73,8 +96,10 @@ export const checkBinanceConnection = async (): Promise<boolean> => {
     });
 
     if (response.data && response.data.balances) {
+      const dynamicEquity = await calculateDynamicEquity();
       console.log('✅ تم الاتصال بنجاح بـ Binance Testnet API.');
-      console.log(`💼 تم اعتماد رأس المال الافتراضي للتداول: $${VIRTUAL_INITIAL_CAPITAL} USDT`);
+      console.log(`💼 تم اعتماد رأس المال الأساسي: $${VIRTUAL_INITIAL_CAPITAL} USDT | الرصيد التراكمي الحالي: $${dynamicEquity.toFixed(2)} USDT`);
+      console.log(`🎯 حجم الدخول الافتراضي لكل صفقة (10%): $${(dynamicEquity * RISK_PERCENT_PER_TRADE).toFixed(2)} USDT`);
       return true;
     }
     return false;
@@ -84,15 +109,22 @@ export const checkBinanceConnection = async (): Promise<boolean> => {
   }
 };
 
-// 2. إرسال أمر شراء معلق (Limit Buy Order) بفلترة دقيقة
+// 2. إرسال أمر شراء معلق (Limit Buy Order) بفلترة دقيقة وتخصيص تراكمي
 export const placeLimitBuyOrder = async (
   symbol: string,
   price: number,
-  allocatedUsdt: number = VIRTUAL_INITIAL_CAPITAL * RISK_PERCENT_PER_TRADE
+  allocatedUsdt?: number
 ): Promise<{ success: boolean; orderId?: string; quantity?: number; error?: string }> => {
   try {
+    // إذا لم يتم تمرير المبلغ، يتم احتسابه ديناميكياً 10% من الرصيد التراكمي المتنامي
+    let finalAllocated = allocatedUsdt;
+    if (!finalAllocated || finalAllocated <= 0) {
+      const currentEquity = await calculateDynamicEquity();
+      finalAllocated = currentEquity * RISK_PERCENT_PER_TRADE;
+    }
+
     const rules = await getSymbolRules(symbol);
-    const rawQty = allocatedUsdt / price;
+    const rawQty = finalAllocated / price;
 
     let finalQtyStr: string;
     let finalPriceStr: string;
