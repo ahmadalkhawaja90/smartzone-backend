@@ -1,4 +1,6 @@
 import TelegramBot from 'node-telegram-bot-api';
+import { Opportunity } from '../models/Opportunity';
+import { calculateDynamicEquity } from './binanceClient';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID;
@@ -9,12 +11,9 @@ if (token) {
 }
 
 // ==========================================================
-// محفظة التتبع المالي الافتراضية ($500)
+// محفظة التتبع المالي الافتراضية ($250)
 // ==========================================================
-export const INITIAL_CAPITAL = 500.0;
-let currentBalance = INITIAL_CAPITAL;
-let winCount = 0;
-let lossCount = 0;
+export const INITIAL_CAPITAL = 250.0;
 
 export const generateOneTimeInviteLink = async (): Promise<string | null> => {
   if (!bot || !CHANNEL_ID) return null;
@@ -29,7 +28,7 @@ export const generateOneTimeInviteLink = async (): Promise<string | null> => {
   }
 };
 
-// 1. رسالة التوصية عند رصد الفرصة
+// 1. رسالة التوصية عند رصد الفرصة المنفذة فعلياً على المنصة
 export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer): Promise<boolean> => {
   if (!bot || !CHANNEL_ID) return false;
 
@@ -45,16 +44,16 @@ export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer):
     const tp3 = opp.targets?.tp3 ?? opp.tp3 ?? (entry + (tp2 - entry) * 1.5);
 
     const message = 
-`💎 *فرصة ICT OTE محتملة* 💎
+`🎯 *فرصة ارتداد مؤكدة (EMA 50 Pullback 4H)* 🎯
 
 🪙 *العملة:* #${symbol}
-💵 *Entry (CE 50%):* \`${entry}\`
-🛑 *SL:* \`${sl}\` ❌
-🎯 *TP1:* \`${tp1}\`
-🚀 *TP2:* \`${tp2}\`
-👑 *TP3:* \`${tp3}\`
+💵 *سعر الدخول:* \`${entry}\`
+🛑 *وقف الخسارة (SL):* \`${sl}\` ❌
+🎯 *الهدف الأول (TP1):* \`${tp1}\`
+🚀 *الهدف الثاني (TP2):* \`${tp2}\`
+👑 *الهدف الثالث (TP3):* \`${tp3}\`
 
-🛡️ *تأمين 50% من الأرباح عند TP1 ونقل الوقف لنقطة الدخول.*`;
+🛡️ *إدارة الصفقة: حجز أرباح عند TP1 ورفع الوقف لنقطة الدخول (Break-Even).*`;
 
     if (chartBuffer) {
       await bot.sendPhoto(CHANNEL_ID, chartBuffer, { caption: message, parse_mode: 'Markdown' });
@@ -67,27 +66,18 @@ export const sendOpportunityToTelegram = async (opp: any, chartBuffer?: Buffer):
   }
 };
 
-// 2. تحديثات الأهداف والستوب مع طباعة الرصيد المحدث
+// 2. تحديثات الأهداف والستوب مع طباعة الرصيد التراكمي المحدث
 export const sendTradeUpdateToTelegram = async (
   event: 'FILLED' | 'TP1' | 'TP2' | 'TP3' | 'SL' | 'BE' | 'TRAILING_TP1',
   opp: any,
   tradeProfitPct?: number,
-  realizedDollarGain?: number
+  _realizedDollarGain?: number
 ) => {
   if (!bot || !CHANNEL_ID) return;
 
   try {
     const symbol = (opp.symbol || '').toUpperCase();
     const pctText = tradeProfitPct !== undefined ? ` (${tradeProfitPct > 0 ? '+' : ''}${tradeProfitPct}%)` : '';
-
-    // تحديث الرصيد الفعلي للمحفظة الافتراضية
-    if (realizedDollarGain !== undefined && realizedDollarGain !== 0) {
-      currentBalance += realizedDollarGain;
-    }
-
-    // احتساب الصفقات الرابحة والخاسرة
-    if (event === 'TP1') winCount++;
-    if (event === 'SL') lossCount++;
 
     let updateText = '';
     if (event === 'FILLED') {
@@ -112,10 +102,19 @@ export const sendTradeUpdateToTelegram = async (
       updateText = `🔒 *إغلاق المتبقي على ربح محجوز (TP1) لعملة* #${symbol} *${pctText}*`;
     }
 
-    // حسابات المحفظة ونسبة النمو
+    // حساب الرصيد التراكمي الدقيق من قاعدة البيانات مباشرة
+    const currentBalance = await calculateDynamicEquity();
     const netProfitDollars = currentBalance - INITIAL_CAPITAL;
     const netProfitPct = ((netProfitDollars / INITIAL_CAPITAL) * 100).toFixed(2);
     const sign = netProfitDollars >= 0 ? '+' : '';
+
+    // إحصاء عدد الصفقات الحقيقي
+    const winCount = await Opportunity.countDocuments({
+      status: { $in: ['CLOSED_BE', 'CLOSED_TRAILING_TP1', 'HIT_TP3'] }
+    });
+    const lossCount = await Opportunity.countDocuments({
+      status: 'HIT_SL'
+    });
 
     const message = 
 `${updateText}
