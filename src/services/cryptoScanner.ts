@@ -16,7 +16,6 @@ export interface CandleData {
 // ==========================================================
 // 1. القائمة السوداء + قائمة أفضل 50 زوج USDT نشط
 // ==========================================================
-// 🛑 العملات المستبعدة رسميًا بسبب ضعف الأداء الفني وارتفاع الوقفات
 const BLACKLIST_PAIRS = [
   'TIAUSDT', 'ATOMUSDT', 'FLOKIUSDT', 'AAVEUSDT', 'ICPUSDT', 
   'INJUSDT', 'BCHUSDT', 'LTCUSDT', 'XRPUSDT', 'OPUSDT', 
@@ -52,7 +51,6 @@ export const getActiveUSDTSpotPairs = async (): Promise<string[]> => {
       .map((item: any) => item.symbol);
 
     const merged = Array.from(new Set([...CORE_TOP_PAIRS, ...dynamicTop])).slice(0, 50);
-    // تصفية أزواج القائمة السوداء
     return merged.filter((sym) => !BLACKLIST_PAIRS.includes(sym));
   } catch (error) {
     return CORE_TOP_PAIRS.filter((sym) => !BLACKLIST_PAIRS.includes(sym));
@@ -176,7 +174,7 @@ const calculateRSI = (candles: CandleData[], period = 14): (number | null)[] => 
 };
 
 // ==========================================
-// 4. خوارزمية فحص الارتداد (EMA 50 Pullback + RSI)
+// 4. خوارزمية فحص الارتداد المفلترة بدقة
 // ==========================================
 export const analyzeEMAPullbackSetup = (candles: CandleData[], symbol: string, timeframe = '4h') => {
   if (candles.length < 210) return null;
@@ -192,25 +190,39 @@ export const analyzeEMAPullbackSetup = (candles: CandleData[], symbol: string, t
   const ema50 = ema50Arr[idx];
   const ema200 = ema200Arr[idx];
   const rsi = rsiArr[idx];
+  const prevRsi = rsiArr[idx - 1];
   const prevEma50 = ema50Arr[idx - 1];
 
-  if (!ema50 || !ema200 || !rsi || !prevEma50) return null;
+  if (!ema50 || !ema200 || !rsi || !prevRsi || !prevEma50) return null;
 
-  // 1. شرط الاتجاه العام الصاعد: السعر و EMA 50 فوق EMA 200
+  // 1. شرط الاتجاه العام الصاعد: السعر و EMA 50 كلاهما فوق EMA 200
   const isUptrend = c.close > ema200 && ema50 > ema200;
   if (!isUptrend) return null;
 
-  // 2. ملامسة خط EMA 50
+  // 2. ملامسة واختبار دعم EMA 50
   const touchedEMA50 = (prevC.low <= prevEma50 * 1.01) || (c.low <= ema50 * 1.01);
   if (!touchedEMA50) return null;
 
-  // 3. وصول RSI إلى تشبع بيعي مؤقت تحت 45 خلال آخر 3 شموع
-  const rsiDip = rsiArr.slice(idx - 2, idx + 1).some((r) => r !== null && r <= 45);
-  if (!rsiDip) return null;
+  // 3. فلترة RSI المحسنة: كان هناك تصحيح حديث لكن الـ RSI ينعطف صعوداً الآن
+  const recentDip = rsiArr.slice(idx - 3, idx + 1).some((r) => r !== null && r <= 48);
+  const rsiReversingUp = rsi > prevRsi && rsi >= 42;
+  if (!recentDip || !rsiReversingUp) return null;
 
-  // 4. شمعة ارتدادية خضراء صريحة
-  const isBullishReversal = c.close > c.open && c.close > prevC.close;
-  if (!isBullishReversal) return null;
+  // 4. شمعة تأكيد قوية (Bullish Engulfing / Strong Reversal) لمنع مصائد الثيران
+  const isGreen = c.close > c.open;
+  const higherClose = c.close > prevC.close;
+  
+  // ابتلاع ما لا يقل عن 60% من الشمعة الهابطة السابقة
+  const prevCandleBody = Math.abs(prevC.close - prevC.open);
+  const currentCandleBody = c.close - c.open;
+  const hasStrongBody = currentCandleBody >= prevCandleBody * 0.6;
+
+  // التأكد من عدم وجود ذيل علوي طويل (رفض بيعي)
+  const candleRange = c.high - c.low;
+  const upperWick = c.high - c.close;
+  const noHeavyRejection = candleRange > 0 ? (upperWick / candleRange) <= 0.35 : true;
+
+  if (!isGreen || !higherClose || !hasStrongBody || !noHeavyRejection) return null;
 
   const entryPrice = parseFloat(c.close.toFixed(6));
   const lowestLow = Math.min(c.low, prevC.low);
@@ -244,12 +256,12 @@ export const analyzeEMAPullbackSetup = (candles: CandleData[], symbol: string, t
       confluenceScore: 95,
       fulfilledConditions: [
         { title: 'Macro Uptrend', description: `السعر أعلى من متوسط EMA 200` },
-        { title: 'EMA 50 Pullback', description: `إعادة اختبار لدعم متوسط EMA 50` },
-        { title: 'RSI Oversold Dip', description: `مؤشر القوة النسبية ارتد من تحت مستوى 45` },
-        { title: 'Bullish Confirmation', description: `إغلاق شمعة ارتداد خضراء صريحة` },
+        { title: 'EMA 50 Support', description: `اختبار ارتدادي ناجح لمتوسط EMA 50` },
+        { title: 'RSI Reversal Momentum', description: `انعطاف مؤشر القوة النسبية صعوداً مع تأكيد المشترين` },
+        { title: 'Bullish Engulfing Confirmation', description: `إغلاق شمعة ارتداد قوية بدون ذيل رفض علوي` },
       ],
       analysisReasons: {
-        entryReason: `شراء عند ارتداد EMA 50 وتأكيد صاعد بسعر $${entryPrice}.`,
+        entryReason: `شراء ارتداد قوي ومؤكد لـ EMA 50 بسعر $${entryPrice}.`,
         stopLossReason: `وقف أسفل قاع الارتداد بنسبة ${riskPct.toFixed(2)}%: $${stopLoss}.`,
         takeProfitReason: `أهداف تصاعدية: TP1 (1.2R): $${tp1} | TP2 (2.0R): $${tp2} | TP3 (3.0R): $${tp3}.`
       },
@@ -268,33 +280,46 @@ export const analyzeEMAPullbackSetup = (candles: CandleData[], symbol: string, t
 };
 
 // ==========================================
-// 5. تشغيل المسح الدوري الشامل (فريم 4H)
+// 5. تشغيل المسح الدوري الشامل
 // ==========================================
 export const runFullCryptoScan = async () => {
   const targetTimeframes = ['4h'];
-  console.log('🚀 [Crypto Scanner] بدء فحص استراتيجية الارتداد (EMA 50 Pullback + RSI 4H)...');
+  console.log('🚀 [Crypto Scanner] بدء فحص استراتيجية الارتداد المفلترة (4H)...');
 
-  // 🛡️ فحص اتجاه قائد السوق (BTC Trend Filter) أولاً قبل فحص أي عملة
+  // 🛡️ فحص صارم لقائد السوق (BTC Trend & Momentum Filter)
   try {
     const btcCandles = await fetchCandles('BTCUSDT', '240', 250);
     if (btcCandles.length >= 50) {
       const btcEMA50Arr = calculateEMA(btcCandles, 50);
-      const latestBtcPrice = btcCandles[btcCandles.length - 1].close;
-      const latestBtcEma50 = btcEMA50Arr[btcEMA50Arr.length - 1];
+      const btcRsiArr = calculateRSI(btcCandles, 14);
 
-      if (latestBtcEma50 && latestBtcPrice < latestBtcEma50) {
-        console.warn(`🛑 [BTC Filter]: سعر البيتكوين ($${latestBtcPrice}) أسفل EMA 50 ($${latestBtcEma50.toFixed(2)}). تم تجميد فتح صفقات جديدة لحماية المحفظة.`);
+      const btcIdx = btcCandles.length - 1;
+      const btcPrice = btcCandles[btcIdx].close;
+      const prevBtcPrice = btcCandles[btcIdx - 1].close;
+      const btcEma50 = btcEMA50Arr[btcIdx];
+      const prevBtcEma50 = btcEMA50Arr[btcIdx - 1];
+      const btcRsi = btcRsiArr[btcIdx];
+
+      // شرطان حاسمان للبيتكوين:
+      // 1. ثبات السعر لآخر شمعتين فوق EMA 50 لمنع الاختراقات الكاذبة
+      const btcAboveEma = btcEma50 && prevBtcEma50 && (btcPrice > btcEma50) && (prevBtcPrice > prevBtcEma50);
+      
+      // 2. زخم البيتكوين إيجابي (RSI >= 50)
+      const btcHasMomentum = btcRsi !== null && btcRsi >= 50;
+
+      if (!btcAboveEma || !btcHasMomentum) {
+        console.warn(`🛑 [BTC Filter]: البيتكوين يفتقر للزخم الصاعد (السعر: $${btcPrice} | EMA50: $${btcEma50?.toFixed(2)} | RSI: ${btcRsi?.toFixed(1)}). تم تجميد صفقات العملات البديلة.`);
         return;
       }
     }
   } catch (error) {
-    console.error('⚠️ [BTC Filter] تعذر جلب شموع البيتكوين، سيتم الاستمرار بحذر.');
+    console.error('⚠️ [BTC Filter] تعذر جلب شموع البيتكوين، سيتم التخطي بحذر.');
   }
 
   let symbols: string[] = [];
   try {
     symbols = await getActiveUSDTSpotPairs();
-    console.log(`🔍 تم تثبيت ${symbols.length} زوج مؤهل للفحص (مستبعد منها القائمة السوداء).`);
+    console.log(`🔍 تم تثبيت ${symbols.length} زوج مؤهل للفحص.`);
   } catch (error) {
     return;
   }
@@ -310,7 +335,6 @@ export const runFullCryptoScan = async () => {
         const result = analyzeEMAPullbackSetup(candles, symbol, tf);
 
         if (result) {
-          // 1. التحقق من عدم تكرار نفس العملة خلال 24 ساعة
           const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
           const existing = await Opportunity.findOne({
             symbol,
@@ -324,48 +348,45 @@ export const runFullCryptoScan = async () => {
             continue;
           }
 
-          // 🛑 2. فحص سقف الصفقات المتزامنة في المحفظة (الحد الأقصى 10 صفقات)
+          // سقف الـ 10 صفقات
           const activeTradesCount = await Opportunity.countDocuments({
             status: { $in: ['PENDING_ENTRY', 'ACTIVE', 'BREAK_EVEN', 'TP1_SECURED'] }
           });
 
           if (activeTradesCount >= 10) {
-            console.log(`⏸️ [سقف الصفقات]: تم رصد فرصة لـ ${symbol} ولكن تم تجاوزها لأن المحفظة ممتلئة بالكامل (${activeTradesCount}/10).`);
-            continue; // لن يتم الشراء ولن يُرسل شيء للتلغرام
+            console.log(`⏸️ [سقف الصفقات]: المحفظة مكتملة (${activeTradesCount}/10).`);
+            continue;
           }
 
-          // ⚡ 3. تنفيذ الشراء الفعلي على منصة Binance أولاً
+          // تنفيذ أمر الشراء
           const entryPrice = result.opportunity.entryZone.max;
           const orderResult = await placeLimitBuyOrder(symbol, entryPrice);
 
-          // 🛑 4. التحقق الصارم من قبول الأمر على المنصة قبل المتابعة
           if (!orderResult.success || !orderResult.orderId) {
-            console.warn(`⚠️ [فشل التنفيذ] لم يتم إرسال تنبيه ${symbol} للتلغرام لعدم نجاح أمر المنصة: ${orderResult.error}`);
-            continue; // منع الحفظ ومنع التلغرام إذا لم يُنفذ في بينانس
+            console.warn(`⚠️ [فشل التنفيذ] تعذر وضع أمر ${symbol}: ${orderResult.error}`);
+            continue;
           }
 
           const orderId = orderResult.orderId;
           console.log(`⚡ [Binance] تم تأكيد أمر الشراء لـ ${symbol} بسعر $${entryPrice} (Order ID: ${orderId})`);
 
-          // 💾 5. الحفظ في قاعدة البيانات بالمعرف المؤكد
           const createdOpp = await Opportunity.create({
             ...result.opportunity,
             orderId,
           });
 
           discoveredCount++;
-          console.log(`🎯 [صفقة مؤكدة ومفتوحة]: ${symbol} (${activeTradesCount + 1}/10)`);
+          console.log(`🎯 [صفقة مؤكدة جديدة]: ${symbol} (${activeTradesCount + 1}/10)`);
 
-          // 📲 6. توليد الشارت وإرسال الإشعار للتلغرام (للصفقة المنفذة فعلياً فقط)
           const chartBuffer = generateChartPngBuffer(candles as CandlePlotData[], result.chartOptions);
           await sendOpportunityToTelegram(createdOpp, chartBuffer);
         }
       } catch (error) {
-        // الاستمرار في الفحص في حال وجود أخطاء في زوج معين
+        // متابعة الفحص
       }
       await sleep(150);
     }
   }
 
-  console.log(`✨ [Crypto Scanner] اكتمل فحص 4H: نُفذت وأُرسلت ${discoveredCount} صفقة حقيقية.`);
+  console.log(`✨ [Crypto Scanner] اكتمل الفحص: نُفذت وأُرسلت ${discoveredCount} صفقة.`);
 };
